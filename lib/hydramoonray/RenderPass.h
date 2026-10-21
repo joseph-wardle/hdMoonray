@@ -38,6 +38,7 @@ protected:
 private:
     RenderDelegate& renderDelegate; // RenderDelegate that called constructor
     mutable bool mDeferIsConverged = false;
+    bool mMissingCamera = false;
 };
 
 }

@@ -31,7 +31,9 @@ RenderPass::IsConverged() const
     // It does not call RenderBuffer::Resolve after IsConverged returns true, so
     // it never shows the last generated image. Fix this by requiring IsConverged()
     // to be called twice to return true and disable the _Execute call between them.
-    if (mDeferIsConverged) {
+    // Without a camera nothing will ever render; converging lets clients
+    // like husk finish (with the error logged) instead of waiting forever.
+    if (mDeferIsConverged || mMissingCamera) {
         return true;
     } else {
         mDeferIsConverged = renderDelegate.renderer().isFrameComplete();
@@ -77,11 +79,16 @@ RenderPass::_Execute(const pxr::HdRenderPassStateSharedPtr& renderPassState,
 
     const Camera* camera(dynamic_cast<const Camera*>(renderPassState->GetCamera()));
     if (not camera) {
-        Logger::error("RenderPassState without camera is unsupported");
+        if (not mMissingCamera) {
+            Logger::error("RenderPassState without camera is unsupported; nothing will be "
+                          "rendered. Check the render settings' camera path.");
+        }
+        mMissingCamera = true;
         // It could the view+proj matricies below and update a fake Camera. But
         // usdview is not using this.
         return;
     }
+    mMissingCamera = false;
     const_cast<Camera*>(camera)->setAsPrimaryCamera(renderDelegate, double(w)/h);
 
     float frame = 0;
