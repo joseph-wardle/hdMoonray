@@ -230,7 +230,13 @@ Mesh::syncSubdivScheme(const HdMeshTopology& topology,
     }
 
     if (not isPrimvarUsed(adaptiveErrorToken)) {
-        float adaptive_error = topology.IsEnabledAdaptive() ? 1.0f : 0.0f;
+        // Tessellate subdivision surfaces adaptively, with edges up to 1 pixel,
+        // capped by the resolution above. Uniform dicing suits Storm's
+        // viewport, but husk renders at refine level 8, which diced every
+        // face 256x256 whatever its size on screen. Set the
+        // moonray:adaptive_error primvar to 0 for uniform tessellation.
+        const float adaptive_error =
+            (topology.IsEnabledAdaptive() || !disableSubd) ? 1.0f : 0.0f;
         geometry()->set(rdlAttrAdaptiveError, adaptive_error);
     }
 
