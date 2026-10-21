@@ -25,6 +25,7 @@
 
 #include <scene_rdl2/render/logging/logging.h>
 #include <iostream>
+#include <map>
 
 using namespace scene_rdl2::rdl2;
 using namespace scene_rdl2::math;
@@ -134,6 +135,61 @@ getCoordSysBinding(
     return nullptr;
 }
 
+// Houdini authors a ramp parm's interpolation as a single basis token
+// (e.g. "hermite") in <ramp>_interpolations, while Moonray ramps take one
+// interpolation enum per key. Expand the token to an int array sized like
+// the sibling <ramp>_positions array. The mapping is the inverse of the one
+// moonray_dcc_plugins uses to build the ramp parms (RAMP_INTERP_LOOKUP).
+// Returns an empty VtValue when the value needs no translation.
+pxr::VtValue
+rampBasisToInterpolations(const pxr::HdMaterialNode& node,
+                          const std::string& attrName,
+                          const pxr::VtValue& value)
+{
+    static const std::string suffix = "_interpolations";
+    if (attrName.size() <= suffix.size() ||
+        attrName.compare(attrName.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return {};
+    }
+    std::string basis;
+    if (value.IsHolding<pxr::TfToken>()) {
+        basis = value.UncheckedGet<pxr::TfToken>().GetString();
+    } else if (value.IsHolding<std::string>()) {
+        basis = value.UncheckedGet<std::string>();
+    } else {
+        return {};
+    }
+
+    // Moonray's interpolation enum (see e.g. DwaBaseMaterial
+    // iridescence_interpolations): None 0, Linear 1, Smooth 4,
+    // Catmull Rom 5, Monotone Cubic 6.
+    static const std::map<std::string, int> basisToMoonray = {
+        {"constant", 0},
+        {"linear", 1},
+        {"catmull-rom", 5},
+        {"catmullrom", 5},
+        {"monotonecubic", 6},
+        {"bezier", 4},
+        {"bspline", 4},
+        {"hermite", 4},
+    };
+    const auto basisIt = basisToMoonray.find(basis);
+    if (basisIt == basisToMoonray.end()) {
+        Logger::error(node.path, ".", attrName, ": unknown ramp basis '", basis, "'");
+        return {};
+    }
+
+    const std::string rampName = attrName.substr(0, attrName.size() - suffix.size());
+    const auto positionsIt = node.parameters.find(pxr::TfToken(rampName + "_positions"));
+    if (positionsIt == node.parameters.end() || !positionsIt->second.IsArrayValued()) {
+        Logger::error(node.path, ".", attrName, ": ramp basis '", basis,
+                      "' given without ", rampName, "_positions");
+        return {};
+    }
+    return pxr::VtValue(pxr::VtArray<int>(positionsIt->second.GetArraySize(),
+                                          basisIt->second));
+}
+
 SceneObject*
 makeMoonrayShader(
     hdMoonray::RenderDelegate& renderDelegate,
@@ -157,7 +213,13 @@ makeMoonrayShader(
                 } else {
                     auto valIt = node.parameters.find(pxr::TfToken(attrName));
                     if (valIt != node.parameters.end()) {
-                        hdMoonray::ValueConverter::setAttribute(shaderObj, attribute, valIt->second);
+                        const pxr::VtValue interpolations =
+                            attribute->getType() == scene_rdl2::rdl2::TYPE_INT_VECTOR ?
+                            rampBasisToInterpolations(node, attrName, valIt->second) :
+                            pxr::VtValue();
+                        hdMoonray::ValueConverter::setAttribute(
+                            shaderObj, attribute,
+                            interpolations.IsEmpty() ? valIt->second : interpolations);
                     } else {
                         hdMoonray::ValueConverter::setDefault(shaderObj, attribute);
                     }
