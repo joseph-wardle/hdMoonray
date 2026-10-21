@@ -16,6 +16,7 @@ target_sources(${component}
     PRIVATE
         ArrasRenderer.cc
         ArrasSettings.cc
+        ImplicitSurfaceSceneIndexPlugin.cc
         RendererPlugin.cc
 )
 
@@ -45,6 +46,11 @@ target_link_libraries(${component}
         Python::Module
         ${PlatformSpecificLibs}
 )
+
+# Implicit surface -> mesh conversion for scene index emulation
+if(TARGET hdsi)
+    target_link_libraries(${component} PUBLIC hdsi)
+endif()
 
 # If at Dreamworks add a SConscript stub file so others can use this library.
 SConscript_Stub(${component})

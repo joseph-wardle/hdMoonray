@@ -9,6 +9,14 @@
                         ],
                         "displayName": "Moonray",
                         "priority": 99
+                    },
+                    "HdMoonray_ImplicitSurfaceSceneIndexPlugin": {
+                        "bases": [
+                            "HdSceneIndexPlugin"
+                        ],
+                        "loadWithRenderer": "Moonray",
+                        "priority": 0,
+                        "displayName": "Scene Index to turn implicit surfaces into meshes for Moonray"
                     }
                 }
             },
