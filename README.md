@@ -47,4 +47,5 @@ the desired settings:
     HDMOONRAY_LOGLEVEL=5 set remote logging level to N (1 is default, 5 is max)
     HDMOONRAY_DISABLE_LIGHTING=1 Turn off all the lights (and turn on the default dome light)
     HDMOONRAY_DOUBLESIDED=1 Make all geometry doublesided unless moonray:side_type=1
+    HDMOONRAY_RENDERMAN_MATERIALS=0 Do not translate RenderMan (ri) material networks
 

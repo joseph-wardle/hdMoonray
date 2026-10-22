@@ -17,6 +17,7 @@ target_sources(${component}
         ArrasRenderer.cc
         ArrasSettings.cc
         ImplicitSurfaceSceneIndexPlugin.cc
+        RenderManMaterialSceneIndexPlugin.cc
         RendererPlugin.cc
 )
 
