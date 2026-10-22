@@ -1,0 +1,313 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Camera "camera"
+{
+    float focalLength = 35
+    float horizontalAperture = 36
+    float verticalAperture = 30
+    double3 xformOp:translate = (0, 2.2, 12.5)
+    float xformOp:rotateX = -5
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateX"]
+}
+
+def DomeLight "env"
+{
+    float inputs:intensity = 0.4
+}
+
+def DistantLight "key"
+{
+    float inputs:angle = 3
+    float inputs:intensity = 3
+    float3 xformOp:rotateXYZ = (-40, -35, 0)
+    uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+}
+
+def Mesh "floor"
+{
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    point3f[] points = [(-20, 0, -20), (-20, 0, 20), (20, 0, 20), (20, 0, -20)]
+}
+
+def Scope "materials"
+{
+    def Material "metal"
+    {
+        token outputs:ri:surface.connect = </materials/metal/surface.outputs:bxdf_out>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "PxrLayerSurface"
+            token inputs:inputMaterial.connect = </materials/metal/mixer.outputs:pxrMaterialOut>
+            token outputs:bxdf_out
+        }
+
+        def Shader "mixer"
+        {
+            uniform token info:id = "PxrLayerMixer"
+            token inputs:baselayer.connect = </materials/metal/layer.outputs:pxrMaterialOut>
+            int inputs:layer1Enabled = 0
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "layer"
+        {
+            uniform token info:id = "PxrLayer"
+            color3f inputs:diffuseColor.connect = </materials/metal/workflow.outputs:resultDiffuseRGB>
+            color3f inputs:specularEdgeColor.connect = </materials/metal/workflow.outputs:resultSpecularEdgeRGB>
+            color3f inputs:specularFaceColor.connect = </materials/metal/workflow.outputs:resultSpecularFaceRGB>
+            int inputs:enableSpecular = 1
+            float inputs:specularGain = 1
+            float inputs:specularRoughness = 0.3
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "workflow"
+        {
+            uniform token info:id = "PxrMetallicWorkflow"
+            color3f inputs:baseColor = (0.95, 0.64, 0.54)
+            float inputs:metallic = 1
+            color3f outputs:resultDiffuseRGB
+            color3f outputs:resultSpecularEdgeRGB
+            color3f outputs:resultSpecularFaceRGB
+        }
+    }
+
+    def Material "dielectric"
+    {
+        token outputs:ri:surface.connect = </materials/dielectric/surface.outputs:bxdf_out>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "PxrLayerSurface"
+            token inputs:inputMaterial.connect = </materials/dielectric/mixer.outputs:pxrMaterialOut>
+            token outputs:bxdf_out
+        }
+
+        def Shader "mixer"
+        {
+            uniform token info:id = "PxrLayerMixer"
+            token inputs:baselayer.connect = </materials/dielectric/layer.outputs:pxrMaterialOut>
+            int inputs:layer1Enabled = 0
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "layer"
+        {
+            uniform token info:id = "PxrLayer"
+            color3f inputs:diffuseColor.connect = </materials/dielectric/workflow.outputs:resultDiffuseRGB>
+            color3f inputs:specularEdgeColor.connect = </materials/dielectric/workflow.outputs:resultSpecularEdgeRGB>
+            color3f inputs:specularFaceColor.connect = </materials/dielectric/workflow.outputs:resultSpecularFaceRGB>
+            int inputs:enableSpecular = 1
+            float inputs:specularGain = 1
+            float inputs:specularRoughness = 0.6
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "workflow"
+        {
+            uniform token info:id = "PxrMetallicWorkflow"
+            color3f inputs:baseColor = (0.1, 0.3, 0.8)
+            float inputs:metallic = 0
+            color3f outputs:resultDiffuseRGB
+            color3f outputs:resultSpecularEdgeRGB
+            color3f outputs:resultSpecularFaceRGB
+        }
+    }
+
+    def Material "glass"
+    {
+        token outputs:ri:surface.connect = </materials/glass/surface.outputs:bxdf_out>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "PxrLayerSurface"
+            token inputs:inputMaterial.connect = </materials/glass/mixer.outputs:pxrMaterialOut>
+            token outputs:bxdf_out
+        }
+
+        def Shader "mixer"
+        {
+            uniform token info:id = "PxrLayerMixer"
+            token inputs:baselayer.connect = </materials/glass/layer.outputs:pxrMaterialOut>
+            int inputs:layer1Enabled = 0
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "layer"
+        {
+            uniform token info:id = "PxrLayer"
+            color3f inputs:diffuseColor.connect = </materials/glass/workflow.outputs:resultDiffuseRGB>
+            color3f inputs:specularEdgeColor.connect = </materials/glass/workflow.outputs:resultSpecularEdgeRGB>
+            color3f inputs:specularFaceColor.connect = </materials/glass/workflow.outputs:resultSpecularFaceRGB>
+            int inputs:enableSpecular = 1
+            float inputs:specularGain = 1
+            float inputs:specularRoughness = 0.05
+            int inputs:enableRR = 1
+            float inputs:rrRefractionGain = 1
+            float inputs:rrReflectionGain = 1
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "workflow"
+        {
+            uniform token info:id = "PxrMetallicWorkflow"
+            color3f inputs:baseColor = (1, 1, 1)
+            float inputs:metallic = 0
+            color3f outputs:resultDiffuseRGB
+            color3f outputs:resultSpecularEdgeRGB
+            color3f outputs:resultSpecularFaceRGB
+        }
+    }
+
+    def Material "normal"
+    {
+        token outputs:ri:surface.connect = </materials/normal/surface.outputs:bxdf_out>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "PxrLayerSurface"
+            token inputs:inputMaterial.connect = </materials/normal/mixer.outputs:pxrMaterialOut>
+            token outputs:bxdf_out
+        }
+
+        def Shader "mixer"
+        {
+            uniform token info:id = "PxrLayerMixer"
+            token inputs:baselayer.connect = </materials/normal/layer.outputs:pxrMaterialOut>
+            int inputs:layer1Enabled = 0
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "layer"
+        {
+            uniform token info:id = "PxrLayer"
+            color3f inputs:diffuseColor.connect = </materials/normal/workflow.outputs:resultDiffuseRGB>
+            color3f inputs:specularEdgeColor.connect = </materials/normal/workflow.outputs:resultSpecularEdgeRGB>
+            color3f inputs:specularFaceColor.connect = </materials/normal/workflow.outputs:resultSpecularFaceRGB>
+            int inputs:enableSpecular = 1
+            float inputs:specularGain = 1
+            float inputs:specularRoughness = 0.3
+            normal3f inputs:bumpNormal.connect = </materials/normal/normalMap.outputs:resultN>
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "workflow"
+        {
+            uniform token info:id = "PxrMetallicWorkflow"
+            color3f inputs:baseColor = (0.5, 0.5, 0.5)
+            float inputs:metallic = 0
+            color3f outputs:resultDiffuseRGB
+            color3f outputs:resultSpecularEdgeRGB
+            color3f outputs:resultSpecularFaceRGB
+        }
+
+        def Shader "normalMap"
+        {
+            uniform token info:id = "PxrNormalMap"
+            asset inputs:filename = @./normal.tx@
+            string inputs:filename_colorspace = "data"
+            normal3f outputs:resultN
+        }
+    }
+
+    def Material "fallback"
+    {
+        token outputs:ri:surface.connect = </materials/fallback/surface.outputs:bxdf_out>
+        token outputs:surface.connect = </materials/fallback/preview.outputs:surface>
+
+        def Shader "preview"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.9, 0.8, 0.1)
+            token outputs:surface
+        }
+
+        def Shader "surface"
+        {
+            uniform token info:id = "PxrLayerSurface"
+            token inputs:inputMaterial.connect = </materials/fallback/mixer.outputs:pxrMaterialOut>
+            token outputs:bxdf_out
+        }
+
+        def Shader "mixer"
+        {
+            uniform token info:id = "PxrLayerMixer"
+            token inputs:baselayer.connect = </materials/fallback/layer.outputs:pxrMaterialOut>
+            int inputs:layer1Enabled = 0
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "layer"
+        {
+            uniform token info:id = "PxrLayer"
+            color3f inputs:diffuseColor.connect = </materials/fallback/workflow.outputs:resultDiffuseRGB>
+            color3f inputs:specularEdgeColor.connect = </materials/fallback/workflow.outputs:resultSpecularEdgeRGB>
+            color3f inputs:specularFaceColor.connect = </materials/fallback/workflow.outputs:resultSpecularFaceRGB>
+            int inputs:enableSpecular = 1
+            float inputs:specularGain = 1
+            float inputs:specularRoughness = 0.3
+            int inputs:enableClearcoat = 1
+            token outputs:pxrMaterialOut
+        }
+
+        def Shader "workflow"
+        {
+            uniform token info:id = "PxrMetallicWorkflow"
+            color3f inputs:baseColor = (0.1, 0.8, 0.1)
+            float inputs:metallic = 0
+            color3f outputs:resultDiffuseRGB
+            color3f outputs:resultSpecularEdgeRGB
+            color3f outputs:resultSpecularFaceRGB
+        }
+    }
+}
+
+def Sphere "metal" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    double3 xformOp:translate = (-4.8, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </materials/metal>
+}
+
+def Sphere "dielectric" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    double3 xformOp:translate = (-2.4, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </materials/dielectric>
+}
+
+def Sphere "glass" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    double3 xformOp:translate = (0.0, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </materials/glass>
+}
+
+def Sphere "normal" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    double3 xformOp:translate = (2.4, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </materials/normal>
+}
+
+def Sphere "fallback" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    double3 xformOp:translate = (4.8, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </materials/fallback>
+}
