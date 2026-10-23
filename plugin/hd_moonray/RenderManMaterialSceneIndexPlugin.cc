@@ -108,6 +108,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (outputMin)
     (outputMax)
     (exposure)
+    (hsv)
     (rendering)
     (data)
     (inputRGB)
@@ -121,6 +122,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (DwaBaseMaterial)
     (ImageMap)
     (OpMap)
+    (ColorCorrectHsvMap)
     (TransformNormalMap)
     (RgbToNormalMap)
     (out)
@@ -150,6 +152,15 @@ struct _Image
     GfVec3f gain = GfVec3f(1.0f);
     GfVec3f offset = GfVec3f(0.0f);
     GfVec3f missing = GfVec3f(1.0f, 0.0f, 1.0f);
+};
+
+// A ColorCorrectHsvMap after the ImageMap called input: PxrColorCorrect's
+// hue offset and saturation factor.
+struct _Hsv
+{
+    TfToken input;
+    float hue;
+    float saturation;
 };
 
 // An OpMap: op1 * op1Factor added to or multiplied by op2 * op2Factor.
@@ -225,6 +236,7 @@ private:
     std::unique_ptr<HdDataSourceMaterialNetworkInterface> _out;
     std::map<TfToken, _Image> _images;  // ImageMap name -> image
     std::map<TfToken, _Op> _ops;        // OpMap name -> operation
+    std::map<TfToken, _Hsv> _hsvs;      // ColorCorrectHsvMap name -> correction
     std::string _error;
 };
 
@@ -356,6 +368,22 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
     }
     _images[name] = image;
     *source = {name, VtValue()};
+
+    // The HSV correction comes before exposure in PxrColorCorrect, but it
+    // scales with its input, so it can follow ImageMap's gain.
+    GfVec3f hsv(0.0f, 1.0f, 1.0f);
+    if (type == _tokens->PxrColorCorrect &&
+        !_GetValue(name, _tokens->hsv, hsv, &hsv)) {
+        return false;
+    }
+    if (hsv[2] != 1.0f) {
+        return _Fail(name, "only an hsv value of 1 is supported");
+    }
+    if (hsv[0] != 0.0f || hsv[1] != 1.0f) {
+        const TfToken hsvName(name.GetString() + "_hsv");
+        _hsvs[hsvName] = {name, hsv[0], hsv[1]};
+        *source = {hsvName, VtValue()};
+    }
     return true;
 }
 
@@ -379,7 +407,7 @@ _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset)
         return true;
     }
     float exposure;
-    if (!_CheckInputs(node, {"inputRGB", "exposure"}) ||
+    if (!_CheckInputs(node, {"inputRGB", "exposure", "hsv"}) ||
         !_GetValue(node, _tokens->exposure, 0.0f, &exposure)) {
         return false;
     }
@@ -853,6 +881,16 @@ _Translator::Translate()
         _Set(name, "op1_factor", op.op1Factor);
         _Set(name, "op2", op.op2);
         _Set(name, "op2_factor", op.op2Factor);
+    }
+
+    // RenderMan's hue offset is in turns, ColorCorrectHsvMap's in degrees.
+    // RenderMan also clamps the saturation to 1, which this does not.
+    for (const auto& [name, hsv] : _hsvs) {
+        _out->SetNodeType(name, _tokens->ColorCorrectHsvMap);
+        _out->SetNodeInputConnection(name, TfToken("input"),
+                                     {{hsv.input, _tokens->out}});
+        _Set(name, "hue_shift", VtValue(hsv.hue * 360.0f));
+        _Set(name, "saturation_factor", VtValue(hsv.saturation));
     }
 
     if (!normalMap.IsEmpty()) {
