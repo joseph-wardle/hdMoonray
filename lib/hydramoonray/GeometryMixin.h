@@ -98,6 +98,10 @@ protected:
     // settings. Has no effect if forceInvisible is not in effect.
     void restoreVisibility(pxr::HdSceneDelegate* sceneDelegate);
 
+    // set visibility from "primvar:moonray:visible_xyz" settings, or failing that
+    // from RenderMan's "primvar:ri:attributes:visibility:xyz" settings
+    void syncVisibility(pxr::HdSceneDelegate* sceneDelegate);
+
 private:
     friend class Mesh; // for geometryForMeshLight()
 

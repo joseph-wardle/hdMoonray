@@ -180,6 +180,12 @@ GeometryMixin::primvarChanged(HdSceneDelegate *sceneDelegate,
         return;
     }
     
+    // RenderMan's visibility primvars drive the RDL visible_xyz flags
+    if (not strncmp(name.GetText(), "ri:attributes:visibility:", 25)) {
+        if (not mForcedInvisible) syncVisibility(sceneDelegate);
+        return;
+    }
+
     // primvars starting with 'moonray:' act to override an RDL object attribute of the same name
     if (not strncmp(name.GetText(), "moonray:", 8)) {
         primvarAttributeOverride(name.GetString().substr(8), value);

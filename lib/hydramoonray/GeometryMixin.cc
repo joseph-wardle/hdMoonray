@@ -273,19 +273,33 @@ GeometryMixin::assign(HdSceneDelegate* sceneDelegate,
 }
 namespace {
 
-    struct AttrPair {const scene_rdl2::rdl2::AttributeKey<bool>& moonrayKey; pxr::TfToken usdKey;};
+    // RenderMan visibility primvars, used where there is no moonray: primvar
+    const TfToken riCamera("ri:attributes:visibility:camera");
+    const TfToken riIndirect("ri:attributes:visibility:indirect");
+    const TfToken riTransmission("ri:attributes:visibility:transmission");
+
+    struct AttrPair {const scene_rdl2::rdl2::AttributeKey<bool>& moonrayKey; pxr::TfToken usdKey; pxr::TfToken riKey;};
 
     const AttrPair visibleAttrs[] = {
-        { scene_rdl2::rdl2::Geometry::sVisibleCamera, pxr::TfToken("moonray:visible_in_camera") },
-        { scene_rdl2::rdl2::Geometry::sVisibleShadow, pxr::TfToken("moonray:visible_shadow") },
-        { scene_rdl2::rdl2::Geometry::sVisibleDiffuseReflection, pxr::TfToken("moonray:visible_diffuse_reflection") },
-        { scene_rdl2::rdl2::Geometry::sVisibleDiffuseTransmission, pxr::TfToken("moonray:visible_diffuse_transmission") },
-        { scene_rdl2::rdl2::Geometry::sVisibleGlossyReflection, pxr::TfToken("moonray:visible_glossy_reflection") },
-        { scene_rdl2::rdl2::Geometry::sVisibleGlossyTransmission, pxr::TfToken("moonray:visible_glossy_transmission") },
-        { scene_rdl2::rdl2::Geometry::sVisibleMirrorReflection, pxr::TfToken("moonray:visible_mirror_reflection") },
-        { scene_rdl2::rdl2::Geometry::sVisibleMirrorTransmission, pxr::TfToken("moonray:visible_mirror_transmission") },
-        { scene_rdl2::rdl2::Geometry::sVisiblePhase, pxr::TfToken("moonray:visible_volume") },
+        { scene_rdl2::rdl2::Geometry::sVisibleCamera, pxr::TfToken("moonray:visible_in_camera"), riCamera },
+        { scene_rdl2::rdl2::Geometry::sVisibleShadow, pxr::TfToken("moonray:visible_shadow"), riTransmission },
+        { scene_rdl2::rdl2::Geometry::sVisibleDiffuseReflection, pxr::TfToken("moonray:visible_diffuse_reflection"), riIndirect },
+        { scene_rdl2::rdl2::Geometry::sVisibleDiffuseTransmission, pxr::TfToken("moonray:visible_diffuse_transmission"), riIndirect },
+        { scene_rdl2::rdl2::Geometry::sVisibleGlossyReflection, pxr::TfToken("moonray:visible_glossy_reflection"), riIndirect },
+        { scene_rdl2::rdl2::Geometry::sVisibleGlossyTransmission, pxr::TfToken("moonray:visible_glossy_transmission"), riIndirect },
+        { scene_rdl2::rdl2::Geometry::sVisibleMirrorReflection, pxr::TfToken("moonray:visible_mirror_reflection"), riIndirect },
+        { scene_rdl2::rdl2::Geometry::sVisibleMirrorTransmission, pxr::TfToken("moonray:visible_mirror_transmission"), riIndirect },
+        { scene_rdl2::rdl2::Geometry::sVisiblePhase, pxr::TfToken("moonray:visible_volume"), riIndirect },
 };
+
+    // read a bool or int primvar into vis. Returns false if the primvar is not set
+    bool getVisibility(const VtValue& val, bool& vis)
+    {
+        if (val.IsHolding<bool>()) vis = val.UncheckedGet<bool>();
+        else if (val.IsHolding<int>()) vis = (val.UncheckedGet<int>() != 0);
+        else return false;
+        return true;
+    }
 
 }
 
@@ -305,16 +319,21 @@ GeometryMixin::restoreVisibility(HdSceneDelegate* sceneDelegate)
 {
     // check that we are in a forced invisible state
     if (!mForcedInvisible) return;
+    syncVisibility(sceneDelegate);
+    mForcedInvisible = false;
+}
+
+void
+GeometryMixin::syncVisibility(HdSceneDelegate* sceneDelegate)
+{
     // we have to reread every primvar that affects visibility
     for (const auto& i : visibleAttrs) {
-        VtValue val = rprim.GetPrimvar(sceneDelegate, i.usdKey);
         bool vis = true;
-        // allow the primvars to be int or bool
-        if (val.IsHolding<bool>()) vis = val.UncheckedGet<bool>();
-        else if (val.IsHolding<int>()) vis = (val.UncheckedGet<int>() != 0);
+        if (!getVisibility(rprim.GetPrimvar(sceneDelegate, i.usdKey), vis)) {
+            getVisibility(rprim.GetPrimvar(sceneDelegate, i.riKey), vis);
+        }
         mGeometry->set(i.moonrayKey, vis);
     }
-    mForcedInvisible = false;
 }
 
 }
