@@ -382,16 +382,17 @@ _Translator::_GetImage(const TfToken& node, const TfToken& input,
 }
 
 // The filename of a PxrTexture or PxrNormalMap whose filename_colorspace is
-// colorspace, or either "rendering" or "data" when colorspace is empty.
-// RenderMan reads texels as stored for both; the pipeline bakes colour maps
-// to the rendering space when it makes the .tex files.
+// colorspace, or "rendering", "data" or unset when colorspace is empty.
+// RenderMan reads .tex texels as stored for all three; the pipeline bakes
+// colour maps to the rendering space when it makes the .tex files.
 bool
 _Translator::_GetFilename(const TfToken& node, const TfToken& colorspace,
                           std::string* filename)
 {
     const TfToken space(
         _AsString(_ri.GetNodeParameterValue(node, _tokens->filename_colorspace)));
-    if (colorspace.IsEmpty() ? (space != _tokens->rendering && space != _tokens->data)
+    if (colorspace.IsEmpty() ? (!space.IsEmpty() && space != _tokens->rendering &&
+                                space != _tokens->data)
                              : space != colorspace) {
         return _Fail(node, "filename_colorspace '" + space.GetString() +
                            "' is not supported");
