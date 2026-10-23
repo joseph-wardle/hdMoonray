@@ -67,6 +67,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (inputMaterial)
     (pxrMaterialOut)
     (baselayer)
+    (enableDiffuse)
     (diffuseColor)
     (diffuseGain)
     (enableSpecular)
@@ -78,6 +79,8 @@ TF_DEFINE_PRIVATE_TOKENS(
     (enableRR)
     (rrRefractionGain)
     (rrReflectionGain)
+    (rrRoughness)
+    (rrIor)
     (baseColor)
     (metallic)
     (filename)
@@ -464,10 +467,11 @@ _Translator::Translate()
     }
     TfToken layer;
     if (!_GetLayer(connection.upstreamNodeName, &layer) ||
-        !_CheckInputs(layer, {"enableSpecular", "specularGain", "diffuseColor",
-                              "specularFaceColor", "specularEdgeColor",
-                              "specularRoughness", "bumpNormal", "enableRR",
-                              "rrRefractionGain", "rrReflectionGain",
+        !_CheckInputs(layer, {"enableDiffuse", "enableSpecular", "specularGain",
+                              "diffuseColor", "specularFaceColor",
+                              "specularEdgeColor", "specularRoughness",
+                              "bumpNormal", "enableRR", "rrRefractionGain",
+                              "rrReflectionGain", "rrRoughness", "rrIor",
                               "diffuseGain"})) {
         return nullptr;
     }
@@ -519,13 +523,19 @@ _Translator::Translate()
         specular = {TfToken(), VtValue(0.0f)};
     }
 
+    int enableDiffuse = 1;
     int enableSpecular = 0;
     _Source roughness;
     _Source transmission;
     int enableRR = 0;
-    if (!_GetValue(layer, _tokens->enableSpecular, 0, &enableSpecular) ||
+    float rrRoughness = 0.1f;
+    float rrIor = 1.5f;
+    if (!_GetValue(layer, _tokens->enableDiffuse, 1, &enableDiffuse) ||
+        !_GetValue(layer, _tokens->enableSpecular, 0, &enableSpecular) ||
         !_GetSource(layer, _tokens->specularRoughness, 0.2f, &roughness) ||
-        !_GetGlass(layer, &enableRR, &transmission)) {
+        !_GetGlass(layer, &enableRR, &transmission) ||
+        !_GetValue(layer, _tokens->rrRoughness, 0.1f, &rrRoughness) ||
+        !_GetValue(layer, _tokens->rrIor, 1.5f, &rrIor)) {
         return nullptr;
     }
     // RenderMan's glass reflects even without specular colours or
@@ -557,7 +567,7 @@ _Translator::Translate()
 
     const TfToken& material = surface;
     _out->SetNodeType(material, _tokens->DwaBaseMaterial);
-    _Set(material, "show_diffuse", VtValue(true));
+    _Set(material, "show_diffuse", VtValue(enableDiffuse != 0));
     _Set(material, "albedo", albedo);
     _Set(material, "diffuse_roughness", VtValue(0.0f));
     _Set(material, "metallic", metallic);
@@ -568,14 +578,14 @@ _Translator::Translate()
     _Set(material, "refractive_index", VtValue(1.5f));
     _Set(material, "specular_model", VtValue(TfToken("Beckmann")));
     _Set(material, "roughness", roughness);
-    // PxrLayer rrRefractionColor 1, rrRoughness 0.1, rrIor 1.5, thinGlass 0.
+    // PxrLayer rrRefractionColor 1, thinGlass 0.
     _Set(material, "show_transmission", VtValue(true));
     _Set(material, "transmission", transmission);
     _Set(material, "transmission_color", VtValue(GfVec3f(1.0f)));
     _Set(material, "use_independent_transmission_roughness", VtValue(true));
-    _Set(material, "independent_transmission_roughness", VtValue(0.1f));
+    _Set(material, "independent_transmission_roughness", VtValue(rrRoughness));
     _Set(material, "use_independent_transmission_refractive_index", VtValue(true));
-    _Set(material, "independent_transmission_refractive_index", VtValue(1.5f));
+    _Set(material, "independent_transmission_refractive_index", VtValue(rrIor));
     _Set(material, "thin_geometry", VtValue(false));
     _out->SetTerminalConnection(HdMaterialTerminalTokens->surface,
                                 {material, HdMaterialTerminalTokens->surface});
