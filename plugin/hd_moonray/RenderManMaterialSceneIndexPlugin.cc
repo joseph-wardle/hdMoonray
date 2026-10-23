@@ -100,6 +100,8 @@ TF_DEFINE_PRIVATE_TOKENS(
     (metallic)
     (filename)
     (filename_colorspace)
+    (orientation)
+    (bumpScale)
     (colorScale)
     (colorOffset)
     (missingColor)
@@ -756,10 +758,13 @@ _Translator::Translate()
         specular = transmission;
     }
 
-    // PxrNormalMap decodes texels as 2*t-1 and, on the left-handed meshes
-    // Houdini writes, tilts the normal towards +s for red and -t for green.
-    // TransformNormalMap tilts it towards +s and +t, so the ImageMap flips
-    // green. A missing texture or tile decodes to the unbent normal.
+    // PxrNormalMap decodes texels as 2*t-1, scales red and green by
+    // bumpScale and, on the left-handed meshes Houdini writes, tilts the
+    // normal towards +s for red and -t for green with its default orientation
+    // (2, Custom); orientation 0 (OpenGL) flips red and green from that, and
+    // 1 (DirectX) flips red. TransformNormalMap tilts it towards +s and +t,
+    // so the ImageMap applies those signs and the scale. A missing texture or
+    // tile decodes to the unbent normal.
     TfToken normalMap;
     if (_IsAuthored(layer, _tokens->bumpNormal)) {
         if (!_GetConnection(layer, _tokens->bumpNormal, &connection) ||
@@ -770,12 +775,25 @@ _Translator::Translate()
         }
         normalMap = connection.upstreamNodeName;
         _Image& image = _images[normalMap];
-        if (!_CheckInputs(normalMap, {"filename", "filename_colorspace"}) ||
-            !_GetFilename(normalMap, _tokens->data, &image.filename)) {
+        int orientation;
+        float scale;
+        if (!_CheckInputs(normalMap, {"filename", "filename_colorspace",
+                                      "orientation", "bumpScale"}) ||
+            !_GetFilename(normalMap, _tokens->data, &image.filename) ||
+            !_GetValue(normalMap, _tokens->orientation, 2, &orientation) ||
+            !_GetValue(normalMap, _tokens->bumpScale, 1.0f, &scale)) {
             return nullptr;
         }
-        image.gain = GfVec3f(1.0f, -1.0f, 1.0f);
-        image.offset = GfVec3f(0.0f, 1.0f, 0.0f);
+        if (orientation < 0 || orientation > 2) {
+            _Fail(normalMap, "orientation must be 0, 1 or 2");
+            return nullptr;
+        }
+        // Red and green signs for orientations 0, 1 and 2.
+        static const float signs[3][2] = {{-1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, -1.0f}};
+        const float red = signs[orientation][0] * scale;
+        const float green = signs[orientation][1] * scale;
+        image.gain = GfVec3f(red, green, 1.0f);
+        image.offset = GfVec3f((1.0f - red) / 2.0f, (1.0f - green) / 2.0f, 0.0f);
         image.missing = GfVec3f(0.5f, 0.5f, 1.0f);
     }
 
