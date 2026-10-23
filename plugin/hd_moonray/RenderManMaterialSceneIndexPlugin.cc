@@ -7,7 +7,8 @@
 // (outputs:ri:surface) that Moonray cannot render, so hdMoonray falls back to
 // the material's universal network, usually a UsdPreviewSurface. When a
 // material has an ri surface and no moonray network, this scene index adds a
-// moonray network built from DwaBaseMaterial, ImageMap and ImageNormalMap.
+// moonray network built from DwaBaseMaterial, ImageMap, ImageNormalMap and
+// OpMap.
 //
 // Only one shape of network is recognised: PxrLayerSurface <- PxrLayerMixer
 // <- PxrLayer, with optional PxrMetallicWorkflow, PxrTexture, PxrRemap,
@@ -16,7 +17,8 @@
 // untranslated with one warning, and the material renders as it did before.
 // Set HDMOONRAY_RENDERMAN_MATERIALS=0 to turn the translation off.
 //
-// RenderMan defaults below are from RenderMan 27.3's shipped .oso files.
+// RenderMan defaults below are from RenderMan 27.3's shipped .oso and .args
+// files.
 
 #include <pxr/pxr.h>
 
@@ -38,6 +40,7 @@
 
 #include <scene_rdl2/render/logging/logging.h>
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -83,6 +86,12 @@ TF_DEFINE_PRIVATE_TOKENS(
     (rrReflectionGain)
     (rrRoughness)
     (rrIor)
+    (enableSubsurface)
+    (subsurfaceGain)
+    (subsurfaceColor)
+    (subsurfaceDmfp)
+    (subsurfaceDmfpColor)
+    (subsurfacePostTint)
     (baseColor)
     (metallic)
     (filename)
@@ -106,6 +115,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (DwaBaseMaterial)
     (ImageMap)
     (ImageNormalMap)
+    (OpMap)
     (out)
 );
 
@@ -133,6 +143,13 @@ struct _Image
     GfVec3f gain = GfVec3f(1.0f);
     GfVec3f offset = GfVec3f(0.0f);
     GfVec3f missing = GfVec3f(1.0f, 0.0f, 1.0f);
+};
+
+// An OpMap: op1 * op1Factor added to or multiplied by op2 * op2Factor.
+struct _Op
+{
+    bool multiply;
+    _Source op1, op1Factor, op2, op2Factor;
 };
 
 // A string, token or asset path value as a string; an asset path resolves
@@ -188,6 +205,11 @@ private:
                       std::string* filename);
     bool _GetLayer(const TfToken& mixer, TfToken* layer);
     bool _GetGlass(const TfToken& layer, int* enableRR, _Source* transmission);
+    bool _GetSubsurface(const TfToken& layer, const _Source& diffuse,
+                        _Source* albedo, float* radius, GfVec3f* color);
+    _Source _Combine(const TfToken& name, bool multiply,
+                     const _Source& op1, const _Source& op1Factor,
+                     const _Source& op2, const _Source& op2Factor);
 
     void _Set(const TfToken& node, const char* input, const _Source& source);
     void _Set(const TfToken& node, const char* input, const VtValue& value);
@@ -195,6 +217,7 @@ private:
     const HdMaterialNetworkInterface& _ri;
     std::unique_ptr<HdDataSourceMaterialNetworkInterface> _out;
     std::map<TfToken, _Image> _images;  // ImageMap name -> image
+    std::map<TfToken, _Op> _ops;        // OpMap name -> operation
     std::string _error;
 };
 
@@ -482,6 +505,79 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
     return true;
 }
 
+// Subsurface. RenderMan adds a subsurface lobe to the diffuse one and scales
+// both its colour and its post tint by subsurfaceGain. DwaBaseMaterial has
+// one diffuse lobe, which scatters when scattering_radius is above 0, so the
+// whole lobe scatters, with albedo diffuse + gain * colour * gain * tint
+// (clamped to 1 by DwaBaseMaterial). subsurfaceTransmitGain only applies with
+// PxrLayerSurface subsurfaceDoubleSided, which is never set here.
+//
+// RenderMan's mean free path is subsurfaceDmfp * subsurfaceDmfpColor *
+// unitLength (0.1). In test renders of a shadow edge, half of it as
+// scattering_radius blurred the edge as RenderMan's default path traced
+// model does.
+bool
+_Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
+                            _Source* albedo, float* radius, GfVec3f* color)
+{
+    int enable = 0;
+    if (!_GetValue(layer, _tokens->enableSubsurface, 0, &enable)) {
+        return false;
+    }
+    *albedo = diffuse;
+    *radius = 0.0f;
+    *color = GfVec3f(1.0f);
+    if (!enable) {
+        return true;
+    }
+
+    _Source gain, subsurfaceColor, tint;
+    float dmfp;
+    GfVec3f dmfpColor;
+    if (!_GetSource(layer, _tokens->subsurfaceGain, 0.0f, &gain) ||
+        !_GetSource(layer, _tokens->subsurfaceColor,
+                    GfVec3f(0.83f, 0.791f, 0.753f), &subsurfaceColor) ||
+        !_GetSource(layer, _tokens->subsurfacePostTint, GfVec3f(1.0f), &tint) ||
+        !_GetValue(layer, _tokens->subsurfaceDmfp, 10.0f, &dmfp) ||
+        !_GetValue(layer, _tokens->subsurfaceDmfpColor,
+                   GfVec3f(0.851f, 0.557f, 0.395f), &dmfpColor)) {
+        return false;
+    }
+    const _Source one = {TfToken(), VtValue(1.0f)};
+    const _Source subsurface =
+        _Combine(TfToken(layer.GetString() + "_subsurface"), true,
+                 subsurfaceColor, gain, tint, gain);
+    *albedo = _Combine(TfToken(layer.GetString() + "_albedo"), false,
+                       diffuse, one, subsurface, one);
+
+    // scattering_color is clamped to 1, so carry its scale in the radius.
+    const float longest = std::max({dmfpColor[0], dmfpColor[1], dmfpColor[2]});
+    if (longest > 0.0f) {
+        *radius = 0.5f * dmfp * 0.1f * longest;
+        *color = dmfpColor / longest;
+    }
+    return true;
+}
+
+// The source for op1 * op1Factor (op) op2 * op2Factor: a constant when all
+// four are constants, otherwise an OpMap called name.
+_Source
+_Translator::_Combine(const TfToken& name, bool multiply,
+                      const _Source& op1, const _Source& op1Factor,
+                      const _Source& op2, const _Source& op2Factor)
+{
+    if (op1.texture.IsEmpty() && op1Factor.texture.IsEmpty() &&
+        op2.texture.IsEmpty() && op2Factor.texture.IsEmpty()) {
+        const GfVec3f a = op1.value.UncheckedGet<GfVec3f>() *
+                          op1Factor.value.UncheckedGet<float>();
+        const GfVec3f b = op2.value.UncheckedGet<GfVec3f>() *
+                          op2Factor.value.UncheckedGet<float>();
+        return {TfToken(), VtValue(multiply ? GfCompMult(a, b) : a + b)};
+    }
+    _ops[name] = {multiply, op1, op1Factor, op2, op2Factor};
+    return {name, VtValue()};
+}
+
 void
 _Translator::_Set(const TfToken& node, const char* input, const _Source& source)
 {
@@ -532,7 +628,10 @@ _Translator::Translate()
                               "specularEdgeColor", "specularRoughness",
                               "bumpNormal", "enableRR", "rrRefractionGain",
                               "rrReflectionGain", "rrRoughness", "rrIor",
-                              "diffuseGain"})) {
+                              "diffuseGain", "enableSubsurface", "subsurfaceGain",
+                              "subsurfaceColor", "subsurfaceDmfp",
+                              "subsurfaceDmfpColor", "subsurfacePostTint",
+                              "subsurfaceTransmitGain"})) {
         return nullptr;
     }
 
@@ -598,6 +697,16 @@ _Translator::Translate()
         !_GetValue(layer, _tokens->rrIor, 1.5f, &rrIor)) {
         return nullptr;
     }
+    _Source diffuse;
+    float radius;
+    GfVec3f radiusColor;
+    if (!_GetSubsurface(layer, albedo, &diffuse, &radius, &radiusColor)) {
+        return nullptr;
+    }
+    if (!enableDiffuse && !(diffuse == albedo)) {
+        _Fail(layer, "enableSubsurface needs enableDiffuse");
+        return nullptr;
+    }
     // RenderMan's glass reflects even without specular colours or
     // enableSpecular; DwaBaseMaterial reflects only through its specular lobe.
     // rrReflectionGain matches rrRefractionGain (see _GetGlass).
@@ -629,8 +738,11 @@ _Translator::Translate()
     const TfToken& material = surface;
     _out->SetNodeType(material, _tokens->DwaBaseMaterial);
     _Set(material, "show_diffuse", VtValue(enableDiffuse != 0));
-    _Set(material, "albedo", albedo);
+    _Set(material, "albedo", diffuse);
     _Set(material, "diffuse_roughness", VtValue(0.0f));
+    _Set(material, "bssrdf", VtValue(TfToken("normalized diffusion")));
+    _Set(material, "scattering_radius", VtValue(radius));
+    _Set(material, "scattering_color", VtValue(radiusColor));
     _Set(material, "metallic", metallic);
     _Set(material, "metallic_color", albedo);
     _Set(material, "metallic_edge_color", albedo);
@@ -665,6 +777,15 @@ _Translator::Translate()
             _Set(name, "gain", VtValue(image.gain));
             _Set(name, "offset_adjust", VtValue(image.offset));
         }
+    }
+
+    for (const auto& [name, op] : _ops) {
+        _out->SetNodeType(name, _tokens->OpMap);
+        _Set(name, "operation", VtValue(TfToken(op.multiply ? "multiply" : "add")));
+        _Set(name, "op1", op.op1);
+        _Set(name, "op1_factor", op.op1Factor);
+        _Set(name, "op2", op.op2);
+        _Set(name, "op2_factor", op.op2Factor);
     }
 
     // PxrNormalMap decodes texels as 2*t-1, with bumpScale 1.
