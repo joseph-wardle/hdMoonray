@@ -114,6 +114,10 @@ void RenderSettings::apply()
                 val = mDelegate.GetRenderSetting(key);
                 if (not val.IsEmpty()) {
                     ValueConverter::setAttribute(&sv, *it, val);
+                } else if (attrName == "enable_presence_shadows") {
+                    // Cutouts cast cutout shadows unless a render setting
+                    // says otherwise, as in RenderMan.
+                    sv.set(sv.sEnablePresenceShadows, true);
                 }
             }
         }
