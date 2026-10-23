@@ -212,6 +212,9 @@ private:
     bool _IsAuthored(const TfToken& node, const TfToken& input) const;
     bool _GetConnection(const TfToken& node, const TfToken& input,
                         _Connection* connection) const;
+    bool _GetUpstream(const TfToken& node, const TfToken& input,
+                      const TfToken& type, const TfToken& output,
+                      TfToken* upstream);
     template <typename T>
     bool _GetValue(const TfToken& node, const TfToken& input, const T& fallback,
                    T* value);
@@ -221,8 +224,7 @@ private:
     bool _GetAdjustment(const TfToken& node, float* scale, float* offset,
                         bool* clamp);
     bool _GetImage(const TfToken& node, const TfToken& input,
-                   const _Connection& connection, const TfToken& output,
-                   _Image* image);
+                   const TfToken& output, _Image* image);
     bool _GetFilename(const TfToken& node, const TfToken& colorspace,
                       std::string* filename);
     bool _GetLayer(const TfToken& mixer, TfToken* layer);
@@ -301,6 +303,23 @@ _Translator::_GetConnection(const TfToken& node, const TfToken& input,
     return true;
 }
 
+// The node connected to input, which must be the output of a node of type.
+bool
+_Translator::_GetUpstream(const TfToken& node, const TfToken& input,
+                          const TfToken& type, const TfToken& output,
+                          TfToken* upstream)
+{
+    _Connection connection;
+    if (!_GetConnection(node, input, &connection) ||
+        _ri.GetNodeType(connection.upstreamNodeName) != type ||
+        connection.upstreamOutputName != output) {
+        return _Fail(node, "input " + input.GetString() + " must be connected to a " +
+                           type.GetString() + " " + output.GetString());
+    }
+    *upstream = connection.upstreamNodeName;
+    return true;
+}
+
 // The value of an unconnected input, or fallback when it is unauthored.
 template <typename T>
 bool
@@ -345,28 +364,19 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
         return true;
     }
 
-    const TfToken name = connection.upstreamNodeName;
-    const TfToken& type = _ri.GetNodeType(name);
+    TfToken name = connection.upstreamNodeName;
+    const TfToken type = _ri.GetNodeType(name);
     _Image image;
     bool clamp = false;
     if (type != _tokens->PxrRemap && type != _tokens->PxrColorCorrect) {
-        if (!_GetImage(node, input, connection, output, &image)) {
+        if (!_GetImage(node, input, output, &image)) {
             return false;
         }
     } else {
-        if (connection.upstreamOutputName != output) {
-            return _Fail(node, "input " + input.GetString() + " must use " +
-                               name.GetString() + "." + output.GetString());
-        }
         float scale, offset;
-        if (!_GetAdjustment(name, &scale, &offset, &clamp)) {
-            return false;
-        }
-        if (!_GetConnection(name, _tokens->inputRGB, &connection)) {
-            return _Fail(name, "input inputRGB must be connected");
-        }
-        if (!_GetImage(name, _tokens->inputRGB, connection, _tokens->resultRGB,
-                       &image)) {
+        if (!_GetUpstream(node, input, type, output, &name) ||
+            !_GetAdjustment(name, &scale, &offset, &clamp) ||
+            !_GetImage(name, _tokens->inputRGB, _tokens->resultRGB, &image)) {
             return false;
         }
         image.gain *= scale;
@@ -444,17 +454,11 @@ _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
 // alphaScale and alphaOffset only change resultA, which is never used.
 bool
 _Translator::_GetImage(const TfToken& node, const TfToken& input,
-                       const _Connection& connection, const TfToken& output,
-                       _Image* image)
+                       const TfToken& output, _Image* image)
 {
-    const TfToken& texture = connection.upstreamNodeName;
-    if (_ri.GetNodeType(texture) != _tokens->PxrTexture ||
-        connection.upstreamOutputName != output) {
-        return _Fail(node, "input " + input.GetString() +
-                           " must be connected to a PxrTexture " +
-                           output.GetString());
-    }
-    return _CheckInputs(texture, {"filename", "filename_colorspace",
+    TfToken texture;
+    return _GetUpstream(node, input, _tokens->PxrTexture, output, &texture) &&
+           _CheckInputs(texture, {"filename", "filename_colorspace",
                                   "colorScale", "colorOffset", "missingColor",
                                   "alphaScale", "alphaOffset"}) &&
            _GetFilename(texture, TfToken(), &image->filename) &&
@@ -497,26 +501,27 @@ _Translator::_GetLayer(const TfToken& mixer, TfToken* layer)
                               "layer3", "layer3Enabled", "layer4", "layer4Enabled"})) {
         return false;
     }
-    _Connection chosen;
-    if (!_GetConnection(mixer, _tokens->baselayer, &chosen)) {
+    _Connection connection;
+    if (!_GetConnection(mixer, _tokens->baselayer, &connection)) {
         return _Fail(mixer, "baselayer must be connected");
     }
+    TfToken chosen = _tokens->baselayer;
     for (int i = 1; i <= 4; ++i) {
-        const std::string name = TfStringPrintf("layer%d", i);
+        const TfToken name(TfStringPrintf("layer%d", i));
         int enabled = 0;
-        if (!_GetValue(mixer, TfToken(name + "Enabled"), i == 1 ? 1 : 0, &enabled)) {
+        if (!_GetValue(mixer, TfToken(name.GetString() + "Enabled"), i == 1 ? 1 : 0,
+                       &enabled)) {
             return false;
         }
-        if (enabled && !_GetConnection(mixer, TfToken(name), &chosen)) {
-            return _Fail(mixer, name + " is enabled but not connected");
+        if (enabled) {
+            if (!_GetConnection(mixer, name, &connection)) {
+                return _Fail(mixer, name.GetString() + " is enabled but not connected");
+            }
+            chosen = name;
         }
     }
-    if (_ri.GetNodeType(chosen.upstreamNodeName) != _tokens->PxrLayer ||
-        chosen.upstreamOutputName != _tokens->pxrMaterialOut) {
-        return _Fail(mixer, "layers must be connected to a PxrLayer pxrMaterialOut");
-    }
-    *layer = chosen.upstreamNodeName;
-    return true;
+    return _GetUpstream(mixer, chosen, _tokens->PxrLayer, _tokens->pxrMaterialOut,
+                        layer);
 }
 
 // Glass (enableRR). The pipeline drives refraction and reflection from one
@@ -547,15 +552,11 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
     if (!_IsAuthored(layer, _tokens->diffuseGain)) {
         return true;
     }
-    _Connection connection;
-    if (!_GetConnection(layer, _tokens->diffuseGain, &connection) ||
-        _ri.GetNodeType(connection.upstreamNodeName) != _tokens->PxrInvert ||
-        connection.upstreamOutputName != _tokens->resultR) {
-        return _Fail(layer, "diffuseGain must be connected to a PxrInvert resultR");
-    }
-    const TfToken& invert = connection.upstreamNodeName;
+    TfToken invert;
     _Source inverted;
-    if (!_CheckInputs(invert, {"inputRGB"}) ||
+    if (!_GetUpstream(layer, _tokens->diffuseGain, _tokens->PxrInvert,
+                      _tokens->resultR, &invert) ||
+        !_CheckInputs(invert, {"inputRGB"}) ||
         !_GetSource(invert, _tokens->inputRGB, GfVec3f(0.0f), &inverted)) {
         return false;
     }
@@ -676,7 +677,7 @@ _Translator::Translate()
         _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
             .second.upstreamNodeName;
     _Connection connection;
-    TfToken layer;
+    TfToken mixer, layer;
     if (_ri.GetNodeType(surface) == _tokens->PxrSurface) {
         if (!_CheckInputs(surface,
                           {"diffuseColor", "presence", "diffuseDoubleSided"})) {
@@ -686,16 +687,10 @@ _Translator::Translate()
     } else {
         if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
             !_CheckInputs(surface,
-                          {"inputMaterial", "presence", "diffuseDoubleSided"})) {
-            return nullptr;
-        }
-        if (!_GetConnection(surface, _tokens->inputMaterial, &connection) ||
-            _ri.GetNodeType(connection.upstreamNodeName) != _tokens->PxrLayerMixer ||
-            connection.upstreamOutputName != _tokens->pxrMaterialOut) {
-            _Fail(surface, "inputMaterial must be connected to a PxrLayerMixer");
-            return nullptr;
-        }
-        if (!_GetLayer(connection.upstreamNodeName, &layer) ||
+                          {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
+            !_GetUpstream(surface, _tokens->inputMaterial, _tokens->PxrLayerMixer,
+                          _tokens->pxrMaterialOut, &mixer) ||
+            !_GetLayer(mixer, &layer) ||
             !_CheckInputs(layer, {"enableDiffuse", "enableSpecular", "specularGain",
                                   "diffuseColor", "specularFaceColor",
                                   "specularEdgeColor", "specularRoughness",
@@ -820,13 +815,10 @@ _Translator::Translate()
     // tile decodes to the unbent normal.
     TfToken normalMap;
     if (_IsAuthored(layer, _tokens->bumpNormal)) {
-        if (!_GetConnection(layer, _tokens->bumpNormal, &connection) ||
-            _ri.GetNodeType(connection.upstreamNodeName) != _tokens->PxrNormalMap ||
-            connection.upstreamOutputName != _tokens->resultN) {
-            _Fail(layer, "bumpNormal must be connected to a PxrNormalMap resultN");
+        if (!_GetUpstream(layer, _tokens->bumpNormal, _tokens->PxrNormalMap,
+                          _tokens->resultN, &normalMap)) {
             return nullptr;
         }
-        normalMap = connection.upstreamNodeName;
         _Image& image = _images[normalMap];
         int orientation;
         float scale;
