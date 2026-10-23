@@ -11,10 +11,10 @@
 //
 // Only one shape of network is recognised: PxrLayerSurface <- PxrLayerMixer
 // <- PxrLayer, with optional PxrMetallicWorkflow, PxrTexture, PxrRemap,
-// PxrNormalMap and PxrInvert nodes, and only the inputs listed in
-// _Translator. Any other network, node or input is left untranslated with
-// one warning, and the material renders as it did before. Set
-// HDMOONRAY_RENDERMAN_MATERIALS=0 to turn the translation off.
+// PxrColorCorrect, PxrNormalMap and PxrInvert nodes, and only the inputs
+// listed in _Translator. Any other network, node or input is left
+// untranslated with one warning, and the material renders as it did before.
+// Set HDMOONRAY_RENDERMAN_MATERIALS=0 to turn the translation off.
 //
 // RenderMan defaults below are from RenderMan 27.3's shipped .oso files.
 
@@ -38,6 +38,7 @@
 
 #include <scene_rdl2/render/logging/logging.h>
 
+#include <cmath>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -62,6 +63,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (PxrTexture)
     (PxrNormalMap)
     (PxrRemap)
+    (PxrColorCorrect)
     (PxrInvert)
 
     (inputMaterial)
@@ -85,6 +87,12 @@ TF_DEFINE_PRIVATE_TOKENS(
     (metallic)
     (filename)
     (filename_colorspace)
+    (colorScale)
+    (colorOffset)
+    (missingColor)
+    (outputMin)
+    (outputMax)
+    (exposure)
     (rendering)
     (data)
     (inputRGB)
@@ -105,8 +113,7 @@ namespace {
 
 using _Connection = HdMaterialNetworkInterface::InputConnection;
 
-// Where a DwaBaseMaterial input gets its value: the ImageMap made from a
-// PxrTexture, or a constant.
+// Where a DwaBaseMaterial input gets its value: an ImageMap, or a constant.
 struct _Source
 {
     TfToken texture;
@@ -116,6 +123,16 @@ struct _Source
     {
         return texture == other.texture && value == other.value;
     }
+};
+
+// An ImageMap: a PxrTexture, with its colorScale and colorOffset and any
+// PxrRemap or PxrColorCorrect after it folded into ImageMap's gain and offset.
+struct _Image
+{
+    std::string filename;
+    GfVec3f gain = GfVec3f(1.0f);
+    GfVec3f offset = GfVec3f(0.0f);
+    GfVec3f missing = GfVec3f(1.0f, 0.0f, 1.0f);
 };
 
 // A string, token or asset path value as a string; an asset path resolves
@@ -163,9 +180,10 @@ private:
     template <typename T>
     bool _GetSource(const TfToken& node, const TfToken& input,
                     const T& fallback, _Source* source);
-    bool _GetTexture(const TfToken& node, const TfToken& input,
-                     const _Connection& connection, const TfToken& output,
-                     _Source* source);
+    bool _GetAdjustment(const TfToken& node, float* scale, float* offset);
+    bool _GetImage(const TfToken& node, const TfToken& input,
+                   const _Connection& connection, const TfToken& output,
+                   _Image* image);
     bool _GetFilename(const TfToken& node, const TfToken& colorspace,
                       std::string* filename);
     bool _GetLayer(const TfToken& mixer, TfToken* layer);
@@ -176,7 +194,7 @@ private:
 
     const HdMaterialNetworkInterface& _ri;
     std::unique_ptr<HdDataSourceMaterialNetworkInterface> _out;
-    std::map<TfToken, std::string> _textures;  // PxrTexture name -> filename
+    std::map<TfToken, _Image> _images;  // ImageMap name -> image
     std::string _error;
 };
 
@@ -259,8 +277,9 @@ _Translator::_GetValue(const TfToken& node, const TfToken& input,
     return true;
 }
 
-// A float or colour input: a texture, possibly through an identity PxrRemap,
-// or a constant.
+// A float or colour input: a texture, possibly through a PxrRemap or
+// PxrColorCorrect, or a constant. The ImageMap is named after the node that
+// feeds the input.
 template <typename T>
 bool
 _Translator::_GetSource(const TfToken& node, const TfToken& input,
@@ -279,29 +298,71 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
         return true;
     }
 
-    const TfToken& upstream = connection.upstreamNodeName;
-    if (_ri.GetNodeType(upstream) == _tokens->PxrRemap) {
-        // A PxrRemap with only inputRGB authored is the identity.
-        if (connection.upstreamOutputName != output) {
-            return _Fail(node, "input " + input.GetString() + " must use " +
-                               upstream.GetString() + "." + output.GetString());
-        }
-        if (!_CheckInputs(upstream, {"inputRGB"})) {
+    const TfToken name = connection.upstreamNodeName;
+    const TfToken& type = _ri.GetNodeType(name);
+    _Image image;
+    if (type != _tokens->PxrRemap && type != _tokens->PxrColorCorrect) {
+        if (!_GetImage(node, input, connection, output, &image)) {
             return false;
         }
-        if (!_GetConnection(upstream, _tokens->inputRGB, &connection)) {
-            return _Fail(upstream, "input inputRGB must be connected");
+    } else {
+        if (connection.upstreamOutputName != output) {
+            return _Fail(node, "input " + input.GetString() + " must use " +
+                               name.GetString() + "." + output.GetString());
         }
-        return _GetTexture(upstream, _tokens->inputRGB, connection,
-                           _tokens->resultRGB, source);
+        float scale, offset;
+        if (!_GetAdjustment(name, &scale, &offset)) {
+            return false;
+        }
+        if (!_GetConnection(name, _tokens->inputRGB, &connection)) {
+            return _Fail(name, "input inputRGB must be connected");
+        }
+        if (!_GetImage(name, _tokens->inputRGB, connection, _tokens->resultRGB,
+                       &image)) {
+            return false;
+        }
+        image.gain *= scale;
+        image.offset = image.offset * scale + GfVec3f(offset);
     }
-    return _GetTexture(node, input, connection, output, source);
+    _images[name] = image;
+    *source = {name, VtValue()};
+    return true;
 }
 
+// A PxrRemap or PxrColorCorrect as scale * x + offset. Only inputs that keep
+// it linear are supported. RenderMan also clamps: PxrRemap its input and
+// output to [0, 1], PxrColorCorrect the HSV value to 1 before exposure.
+// Dropping those clamps changes nothing for inputs in [0, 1] except results
+// outside [0, 1], which DwaBaseMaterial clamps on every input set here.
 bool
-_Translator::_GetTexture(const TfToken& node, const TfToken& input,
-                         const _Connection& connection, const TfToken& output,
-                         _Source* source)
+_Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset)
+{
+    if (_ri.GetNodeType(node) == _tokens->PxrRemap) {
+        float min, max;
+        if (!_CheckInputs(node, {"inputRGB", "outputMin", "outputMax"}) ||
+            !_GetValue(node, _tokens->outputMin, 0.0f, &min) ||
+            !_GetValue(node, _tokens->outputMax, 1.0f, &max)) {
+            return false;
+        }
+        *scale = max - min;
+        *offset = min;
+        return true;
+    }
+    float exposure;
+    if (!_CheckInputs(node, {"inputRGB", "exposure"}) ||
+        !_GetValue(node, _tokens->exposure, 0.0f, &exposure)) {
+        return false;
+    }
+    *scale = std::exp2(exposure);
+    *offset = 0.0f;
+    return true;
+}
+
+// alphaScale and alphaOffset only change resultA, which is never used.
+bool
+_Translator::_GetImage(const TfToken& node, const TfToken& input,
+                       const _Connection& connection, const TfToken& output,
+                       _Image* image)
 {
     const TfToken& texture = connection.upstreamNodeName;
     if (_ri.GetNodeType(texture) != _tokens->PxrTexture ||
@@ -310,13 +371,14 @@ _Translator::_GetTexture(const TfToken& node, const TfToken& input,
                            " must be connected to a PxrTexture " +
                            output.GetString());
     }
-    std::string filename;
-    if (!_GetFilename(texture, TfToken(), &filename)) {
-        return false;
-    }
-    _textures[texture] = filename;
-    *source = {texture, VtValue()};
-    return true;
+    return _CheckInputs(texture, {"filename", "filename_colorspace",
+                                  "colorScale", "colorOffset", "missingColor",
+                                  "alphaScale", "alphaOffset"}) &&
+           _GetFilename(texture, TfToken(), &image->filename) &&
+           _GetValue(texture, _tokens->colorScale, GfVec3f(1.0f), &image->gain) &&
+           _GetValue(texture, _tokens->colorOffset, GfVec3f(0.0f), &image->offset) &&
+           _GetValue(texture, _tokens->missingColor, GfVec3f(1.0f, 0.0f, 1.0f),
+                     &image->missing);
 }
 
 // The filename of a PxrTexture or PxrNormalMap whose filename_colorspace is
@@ -327,9 +389,6 @@ bool
 _Translator::_GetFilename(const TfToken& node, const TfToken& colorspace,
                           std::string* filename)
 {
-    if (!_CheckInputs(node, {"filename", "filename_colorspace"})) {
-        return false;
-    }
     const TfToken space(
         _AsString(_ri.GetNodeParameterValue(node, _tokens->filename_colorspace)));
     if (colorspace.IsEmpty() ? (space != _tokens->rendering && space != _tokens->data)
@@ -556,7 +615,8 @@ _Translator::Translate()
             return nullptr;
         }
         normalMap = connection.upstreamNodeName;
-        if (!_GetFilename(normalMap, _tokens->data, &normalFilename)) {
+        if (!_CheckInputs(normalMap, {"filename", "filename_colorspace"}) ||
+            !_GetFilename(normalMap, _tokens->data, &normalFilename)) {
             return nullptr;
         }
     }
@@ -590,14 +650,20 @@ _Translator::Translate()
     _out->SetTerminalConnection(HdMaterialTerminalTokens->surface,
                                 {material, HdMaterialTerminalTokens->surface});
 
-    // A missing texture renders magenta, like PxrTexture's missingColor.
-    for (const auto& [texture, filename] : _textures) {
-        _out->SetNodeType(texture, _tokens->ImageMap);
-        _Set(texture, "texture", VtValue(filename));
-        _Set(texture, "gamma", VtValue(TfToken("off")));
-        _Set(texture, "wrap_around", VtValue(false));
-        _Set(texture, "use_default_color_when_missing", VtValue(true));
-        _Set(texture, "default_color", VtValue(GfVec3f(1.0f, 0.0f, 1.0f)));
+    // PxrTexture applies colorScale and colorOffset to missingColor too, and
+    // so does ImageMap's gain and offset to default_color.
+    for (const auto& [name, image] : _images) {
+        _out->SetNodeType(name, _tokens->ImageMap);
+        _Set(name, "texture", VtValue(image.filename));
+        _Set(name, "gamma", VtValue(TfToken("off")));
+        _Set(name, "wrap_around", VtValue(false));
+        _Set(name, "use_default_color_when_missing", VtValue(true));
+        _Set(name, "default_color", VtValue(image.missing));
+        if (image.gain != GfVec3f(1.0f) || image.offset != GfVec3f(0.0f)) {
+            _Set(name, "gain_offset_enabled", VtValue(true));
+            _Set(name, "gain", VtValue(image.gain));
+            _Set(name, "offset_adjust", VtValue(image.offset));
+        }
     }
 
     // PxrNormalMap decodes texels as 2*t-1, with bumpScale 1.
