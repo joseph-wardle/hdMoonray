@@ -70,6 +70,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (PxrInvert)
 
     (inputMaterial)
+    (presence)
     (pxrMaterialOut)
     (baselayer)
     (enableDiffuse)
@@ -611,8 +612,10 @@ _Translator::Translate()
         _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
             .second.upstreamNodeName;
     _Connection connection;
+    _Source presence;
     if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
-        !_CheckInputs(surface, {"inputMaterial"})) {
+        !_CheckInputs(surface, {"inputMaterial", "presence"}) ||
+        !_GetSource(surface, _tokens->presence, 1.0f, &presence)) {
         return nullptr;
     }
     if (!_GetConnection(surface, _tokens->inputMaterial, &connection) ||
@@ -760,6 +763,7 @@ _Translator::Translate()
     _Set(material, "use_independent_transmission_refractive_index", VtValue(true));
     _Set(material, "independent_transmission_refractive_index", VtValue(rrIor));
     _Set(material, "thin_geometry", VtValue(false));
+    _Set(material, "presence", presence);
     _out->SetTerminalConnection(HdMaterialTerminalTokens->surface,
                                 {material, HdMaterialTerminalTokens->surface});
 
