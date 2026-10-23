@@ -93,6 +93,8 @@ TF_DEFINE_PRIVATE_TOKENS(
     (subsurfaceDmfp)
     (subsurfaceDmfpColor)
     (subsurfacePostTint)
+    (enableSinglescatter)
+    (enableGlow)
     (baseColor)
     (metallic)
     (filename)
@@ -638,8 +640,26 @@ _Translator::Translate()
                               "diffuseGain", "enableSubsurface", "subsurfaceGain",
                               "subsurfaceColor", "subsurfaceDmfp",
                               "subsurfaceDmfpColor", "subsurfacePostTint",
-                              "subsurfaceTransmitGain"})) {
+                              "subsurfaceTransmitGain", "enableSinglescatter",
+                              "singlescatterGain", "singlescatterColor",
+                              "singlescatterMfp", "singlescatterMfpColor",
+                              "singlescatterDirectionality", "singlescatterIor",
+                              "singlescatterBlur", "singlescatterDirectGain",
+                              "singlescatterDirectGainTint", "enableGlow",
+                              "glowGain", "glowColor"})) {
         return nullptr;
+    }
+    // RenderMan ignores the single scatter and glow inputs unless their lobe
+    // is enabled, and these lobes are not translated.
+    for (const TfToken& lobe : {_tokens->enableSinglescatter, _tokens->enableGlow}) {
+        int enabled = 0;
+        if (!_GetValue(layer, lobe, 0, &enabled)) {
+            return nullptr;
+        }
+        if (enabled) {
+            _Fail(layer, lobe.GetString() + " is not supported");
+            return nullptr;
+        }
     }
 
     // Base colour and metallic. PxrMetallicWorkflow feeds diffuse
