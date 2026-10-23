@@ -7,8 +7,8 @@
 // (outputs:ri:surface) that Moonray cannot render, so hdMoonray falls back to
 // the material's universal network, usually a UsdPreviewSurface. When a
 // material has an ri surface and no moonray network, this scene index adds a
-// moonray network built from DwaBaseMaterial, ImageMap, ImageNormalMap and
-// OpMap.
+// moonray network built from DwaBaseMaterial, ImageMap, OpMap,
+// TransformNormalMap and RgbToNormalMap.
 //
 // Only one shape of network is recognised: PxrLayerSurface <- PxrLayerMixer
 // <- PxrLayer, with optional PxrMetallicWorkflow, PxrTexture, PxrRemap,
@@ -118,8 +118,9 @@ TF_DEFINE_PRIVATE_TOKENS(
 
     (DwaBaseMaterial)
     (ImageMap)
-    (ImageNormalMap)
     (OpMap)
+    (TransformNormalMap)
+    (RgbToNormalMap)
     (out)
 );
 
@@ -755,8 +756,11 @@ _Translator::Translate()
         specular = transmission;
     }
 
+    // PxrNormalMap decodes texels as 2*t-1 and, on the left-handed meshes
+    // Houdini writes, tilts the normal towards +s for red and -t for green.
+    // TransformNormalMap tilts it towards +s and +t, so the ImageMap flips
+    // green. A missing texture or tile decodes to the unbent normal.
     TfToken normalMap;
-    std::string normalFilename;
     if (_IsAuthored(layer, _tokens->bumpNormal)) {
         if (!_GetConnection(layer, _tokens->bumpNormal, &connection) ||
             _ri.GetNodeType(connection.upstreamNodeName) != _tokens->PxrNormalMap ||
@@ -765,10 +769,14 @@ _Translator::Translate()
             return nullptr;
         }
         normalMap = connection.upstreamNodeName;
+        _Image& image = _images[normalMap];
         if (!_CheckInputs(normalMap, {"filename", "filename_colorspace"}) ||
-            !_GetFilename(normalMap, _tokens->data, &normalFilename)) {
+            !_GetFilename(normalMap, _tokens->data, &image.filename)) {
             return nullptr;
         }
+        image.gain = GfVec3f(1.0f, -1.0f, 1.0f);
+        image.offset = GfVec3f(0.0f, 1.0f, 0.0f);
+        image.missing = GfVec3f(0.5f, 0.5f, 1.0f);
     }
 
     // Write the moonray network. Nodes keep their RenderMan names.
@@ -829,15 +837,17 @@ _Translator::Translate()
         _Set(name, "op2_factor", op.op2Factor);
     }
 
-    // PxrNormalMap decodes texels as 2*t-1, with bumpScale 1.
     if (!normalMap.IsEmpty()) {
-        _out->SetNodeType(normalMap, _tokens->ImageNormalMap);
-        _Set(normalMap, "tangent_space_normal_texture", VtValue(normalFilename));
-        _Set(normalMap, "normal_encoding", VtValue(TfToken("[0,1]")));
-        _Set(normalMap, "use_default_value_when_missing", VtValue(true));
-        _Set(normalMap, "default_value", VtValue(GfVec3f(0.0f, 0.0f, 1.0f)));
-        _out->SetNodeInputConnection(material, TfToken("input_normal"),
+        const TfToken tangent(normalMap.GetString() + "_tangent");
+        const TfToken normal(normalMap.GetString() + "_normal");
+        _out->SetNodeType(tangent, _tokens->TransformNormalMap);
+        _out->SetNodeInputConnection(tangent, TfToken("input_normal"),
                                      {{normalMap, _tokens->out}});
+        _out->SetNodeType(normal, _tokens->RgbToNormalMap);
+        _out->SetNodeInputConnection(normal, TfToken("input"),
+                                     {{tangent, _tokens->out}});
+        _out->SetNodeInputConnection(material, TfToken("input_normal"),
+                                     {{normal, _tokens->out}});
         _Set(material, "input_normal_dial", VtValue(1.0f));
     }
 
