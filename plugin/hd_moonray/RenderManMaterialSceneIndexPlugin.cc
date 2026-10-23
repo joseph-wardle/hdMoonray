@@ -105,6 +105,8 @@ TF_DEFINE_PRIVATE_TOKENS(
     (colorScale)
     (colorOffset)
     (missingColor)
+    (inputMin)
+    (inputMax)
     (outputMin)
     (outputMax)
     (exposure)
@@ -123,6 +125,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (ImageMap)
     (OpMap)
     (ColorCorrectHsvMap)
+    (ClampMap)
     (TransformNormalMap)
     (RgbToNormalMap)
     (out)
@@ -215,7 +218,8 @@ private:
     template <typename T>
     bool _GetSource(const TfToken& node, const TfToken& input,
                     const T& fallback, _Source* source);
-    bool _GetAdjustment(const TfToken& node, float* scale, float* offset);
+    bool _GetAdjustment(const TfToken& node, float* scale, float* offset,
+                        bool* clamp);
     bool _GetImage(const TfToken& node, const TfToken& input,
                    const _Connection& connection, const TfToken& output,
                    _Image* image);
@@ -237,6 +241,7 @@ private:
     std::map<TfToken, _Image> _images;  // ImageMap name -> image
     std::map<TfToken, _Op> _ops;        // OpMap name -> operation
     std::map<TfToken, _Hsv> _hsvs;      // ColorCorrectHsvMap name -> correction
+    std::map<TfToken, TfToken> _clamps; // ClampMap name -> input
     std::string _error;
 };
 
@@ -343,6 +348,7 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
     const TfToken name = connection.upstreamNodeName;
     const TfToken& type = _ri.GetNodeType(name);
     _Image image;
+    bool clamp = false;
     if (type != _tokens->PxrRemap && type != _tokens->PxrColorCorrect) {
         if (!_GetImage(node, input, connection, output, &image)) {
             return false;
@@ -353,7 +359,7 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
                                name.GetString() + "." + output.GetString());
         }
         float scale, offset;
-        if (!_GetAdjustment(name, &scale, &offset)) {
+        if (!_GetAdjustment(name, &scale, &offset, &clamp)) {
             return false;
         }
         if (!_GetConnection(name, _tokens->inputRGB, &connection)) {
@@ -384,6 +390,11 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
         _hsvs[hsvName] = {name, hsv[0], hsv[1]};
         *source = {hsvName, VtValue()};
     }
+    if (clamp) {
+        const TfToken clampName(name.GetString() + "_clamp");
+        _clamps[clampName] = name;
+        *source = {clampName, VtValue()};
+    }
     return true;
 }
 
@@ -392,18 +403,32 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
 // output to [0, 1], PxrColorCorrect the HSV value to 1 before exposure.
 // Dropping those clamps changes nothing for inputs in [0, 1] except results
 // outside [0, 1], which DwaBaseMaterial clamps on every input set here.
+// An input range maps inputs in [0, 1] outside it, so clamp is set when there
+// is one, and is only supported with the default output range.
 bool
-_Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset)
+_Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
+                            bool* clamp)
 {
+    *clamp = false;
     if (_ri.GetNodeType(node) == _tokens->PxrRemap) {
-        float min, max;
-        if (!_CheckInputs(node, {"inputRGB", "outputMin", "outputMax"}) ||
+        float inMin, inMax, min, max;
+        if (!_CheckInputs(node, {"inputRGB", "inputMin", "inputMax",
+                                 "outputMin", "outputMax"}) ||
+            !_GetValue(node, _tokens->inputMin, 0.0f, &inMin) ||
+            !_GetValue(node, _tokens->inputMax, 1.0f, &inMax) ||
             !_GetValue(node, _tokens->outputMin, 0.0f, &min) ||
             !_GetValue(node, _tokens->outputMax, 1.0f, &max)) {
             return false;
         }
-        *scale = max - min;
-        *offset = min;
+        if (inMin == inMax) {
+            return _Fail(node, "inputMin must differ from inputMax");
+        }
+        *clamp = inMin != 0.0f || inMax != 1.0f;
+        if (*clamp && (min != 0.0f || max != 1.0f)) {
+            return _Fail(node, "an input range needs the default output range");
+        }
+        *scale = (max - min) / (inMax - inMin);
+        *offset = min - inMin * *scale;
         return true;
     }
     float exposure;
@@ -891,6 +916,12 @@ _Translator::Translate()
                                      {{hsv.input, _tokens->out}});
         _Set(name, "hue_shift", VtValue(hsv.hue * 360.0f));
         _Set(name, "saturation_factor", VtValue(hsv.saturation));
+    }
+
+    for (const auto& [name, input] : _clamps) {
+        _out->SetNodeType(name, _tokens->ClampMap);
+        _out->SetNodeInputConnection(name, TfToken("input"),
+                                     {{input, _tokens->out}});
     }
 
     if (!normalMap.IsEmpty()) {
