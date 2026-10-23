@@ -60,6 +60,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (moonray)
 
     (PxrLayerSurface)
+    (PxrSurface)
     (PxrLayerMixer)
     (PxrLayer)
     (PxrMetallicWorkflow)
@@ -609,44 +610,56 @@ _Translator::Translate()
         }
     }
 
-    // PxrLayerSurface <- PxrLayerMixer <- PxrLayer. diffuseDoubleSided
-    // needs no translation: MoonRay lights both sides of double-sided
-    // geometry, as RenderMan does when it is on. When it is off, RenderMan
-    // leaves back faces unlit and MoonRay does not.
+    // PxrLayerSurface <- PxrLayerMixer <- PxrLayer, or a bare PxrSurface.
+    // With only diffuseColor set, a PxrSurface renders as a PxrLayer with only
+    // diffuseColor set, so it is read as one. diffuseDoubleSided needs no
+    // translation: MoonRay lights both sides of double-sided geometry, as
+    // RenderMan does when it is on. When it is off, RenderMan leaves back
+    // faces unlit and MoonRay does not.
     const TfToken surface =
         _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
             .second.upstreamNodeName;
     _Connection connection;
-    _Source presence;
-    if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
-        !_CheckInputs(surface,
-                      {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
-        !_GetSource(surface, _tokens->presence, 1.0f, &presence)) {
-        return nullptr;
-    }
-    if (!_GetConnection(surface, _tokens->inputMaterial, &connection) ||
-        _ri.GetNodeType(connection.upstreamNodeName) != _tokens->PxrLayerMixer ||
-        connection.upstreamOutputName != _tokens->pxrMaterialOut) {
-        _Fail(surface, "inputMaterial must be connected to a PxrLayerMixer");
-        return nullptr;
-    }
     TfToken layer;
-    if (!_GetLayer(connection.upstreamNodeName, &layer) ||
-        !_CheckInputs(layer, {"enableDiffuse", "enableSpecular", "specularGain",
-                              "diffuseColor", "specularFaceColor",
-                              "specularEdgeColor", "specularRoughness",
-                              "bumpNormal", "enableRR", "rrRefractionGain",
-                              "rrReflectionGain", "rrRoughness", "rrIor",
-                              "diffuseGain", "enableSubsurface", "subsurfaceGain",
-                              "subsurfaceColor", "subsurfaceDmfp",
-                              "subsurfaceDmfpColor", "subsurfacePostTint",
-                              "subsurfaceTransmitGain", "enableSinglescatter",
-                              "singlescatterGain", "singlescatterColor",
-                              "singlescatterMfp", "singlescatterMfpColor",
-                              "singlescatterDirectionality", "singlescatterIor",
-                              "singlescatterBlur", "singlescatterDirectGain",
-                              "singlescatterDirectGainTint", "enableGlow",
-                              "glowGain", "glowColor"})) {
+    if (_ri.GetNodeType(surface) == _tokens->PxrSurface) {
+        if (!_CheckInputs(surface,
+                          {"diffuseColor", "presence", "diffuseDoubleSided"})) {
+            return nullptr;
+        }
+        layer = surface;
+    } else {
+        if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
+            !_CheckInputs(surface,
+                          {"inputMaterial", "presence", "diffuseDoubleSided"})) {
+            return nullptr;
+        }
+        if (!_GetConnection(surface, _tokens->inputMaterial, &connection) ||
+            _ri.GetNodeType(connection.upstreamNodeName) != _tokens->PxrLayerMixer ||
+            connection.upstreamOutputName != _tokens->pxrMaterialOut) {
+            _Fail(surface, "inputMaterial must be connected to a PxrLayerMixer");
+            return nullptr;
+        }
+        if (!_GetLayer(connection.upstreamNodeName, &layer) ||
+            !_CheckInputs(layer, {"enableDiffuse", "enableSpecular", "specularGain",
+                                  "diffuseColor", "specularFaceColor",
+                                  "specularEdgeColor", "specularRoughness",
+                                  "bumpNormal", "enableRR", "rrRefractionGain",
+                                  "rrReflectionGain", "rrRoughness", "rrIor",
+                                  "diffuseGain", "enableSubsurface", "subsurfaceGain",
+                                  "subsurfaceColor", "subsurfaceDmfp",
+                                  "subsurfaceDmfpColor", "subsurfacePostTint",
+                                  "subsurfaceTransmitGain", "enableSinglescatter",
+                                  "singlescatterGain", "singlescatterColor",
+                                  "singlescatterMfp", "singlescatterMfpColor",
+                                  "singlescatterDirectionality", "singlescatterIor",
+                                  "singlescatterBlur", "singlescatterDirectGain",
+                                  "singlescatterDirectGainTint", "enableGlow",
+                                  "glowGain", "glowColor"})) {
+            return nullptr;
+        }
+    }
+    _Source presence;
+    if (!_GetSource(surface, _tokens->presence, 1.0f, &presence)) {
         return nullptr;
     }
     // RenderMan ignores the single scatter and glow inputs unless their lobe
