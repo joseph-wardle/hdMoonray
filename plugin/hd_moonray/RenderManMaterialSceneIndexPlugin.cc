@@ -607,14 +607,18 @@ _Translator::Translate()
         }
     }
 
-    // PxrLayerSurface <- PxrLayerMixer <- PxrLayer
+    // PxrLayerSurface <- PxrLayerMixer <- PxrLayer. diffuseDoubleSided
+    // needs no translation: MoonRay lights both sides of double-sided
+    // geometry, as RenderMan does when it is on. When it is off, RenderMan
+    // leaves back faces unlit and MoonRay does not.
     const TfToken surface =
         _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
             .second.upstreamNodeName;
     _Connection connection;
     _Source presence;
     if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
-        !_CheckInputs(surface, {"inputMaterial", "presence"}) ||
+        !_CheckInputs(surface,
+                      {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
         !_GetSource(surface, _tokens->presence, 1.0f, &presence)) {
         return nullptr;
     }
