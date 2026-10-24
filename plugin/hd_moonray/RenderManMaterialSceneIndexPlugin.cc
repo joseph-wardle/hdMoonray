@@ -70,50 +70,9 @@ TF_DEFINE_PRIVATE_TOKENS(
     (PxrColorCorrect)
     (PxrInvert)
 
-    (inputMaterial)
-    (presence)
     (pxrMaterialOut)
-    (baselayer)
-    (enableDiffuse)
-    (diffuseColor)
-    (diffuseGain)
-    (enableSpecular)
-    (specularGain)
-    (specularFaceColor)
-    (specularEdgeColor)
-    (specularRoughness)
-    (bumpNormal)
-    (enableRR)
-    (rrRefractionGain)
-    (rrReflectionGain)
-    (rrRoughness)
-    (rrIor)
-    (enableSubsurface)
-    (subsurfaceGain)
-    (subsurfaceColor)
-    (subsurfaceDmfp)
-    (subsurfaceDmfpColor)
-    (subsurfacePostTint)
-    (enableSinglescatter)
-    (enableGlow)
-    (baseColor)
-    (metallic)
-    (filename)
-    (filename_colorspace)
-    (orientation)
-    (bumpScale)
-    (colorScale)
-    (colorOffset)
-    (missingColor)
-    (inputMin)
-    (inputMax)
-    (outputMin)
-    (outputMax)
-    (exposure)
-    (hsv)
     (rendering)
     (data)
-    (inputRGB)
     (resultRGB)
     (resultR)
     (resultN)
@@ -229,24 +188,24 @@ private:
     bool _CheckType(const TfToken& node, const TfToken& type);
     bool _CheckInputs(const TfToken& node,
                       std::initializer_list<const char*> allowed);
-    bool _IsAuthored(const TfToken& node, const TfToken& input) const;
-    bool _GetConnection(const TfToken& node, const TfToken& input,
+    bool _IsAuthored(const TfToken& node, const char* input) const;
+    bool _GetConnection(const TfToken& node, const char* input,
                         _Connection* connection) const;
-    bool _GetUpstream(const TfToken& node, const TfToken& input,
+    bool _GetUpstream(const TfToken& node, const char* input,
                       const TfToken& type, const TfToken& output,
                       TfToken* upstream);
     template <typename T>
-    bool _GetValue(const TfToken& node, const TfToken& input, const T& fallback,
+    bool _GetValue(const TfToken& node, const char* input, const T& fallback,
                    T* value);
     template <typename T>
-    bool _GetSource(const TfToken& node, const TfToken& input,
+    bool _GetSource(const TfToken& node, const char* input,
                     const T& fallback, _Source* source);
-    bool _GetAdjustedImage(const TfToken& node, const TfToken& input,
+    bool _GetAdjustedImage(const TfToken& node, const char* input,
                            const TfToken& type, const TfToken& output,
                            _Source* source);
     bool _GetAdjustment(const TfToken& node, float* scale, float* offset,
                         bool* clamp);
-    bool _GetImage(const TfToken& node, const TfToken& input,
+    bool _GetImage(const TfToken& node, const char* input,
                    const TfToken& output, _Image* image);
     bool _GetFilename(const TfToken& node, const TfToken& colorspace,
                       std::string* filename);
@@ -312,18 +271,18 @@ _Translator::_CheckInputs(const TfToken& node,
 }
 
 bool
-_Translator::_IsAuthored(const TfToken& node, const TfToken& input) const
+_Translator::_IsAuthored(const TfToken& node, const char* input) const
 {
     _Connection connection;
-    return !_ri.GetNodeParameterValue(node, input).IsEmpty() ||
+    return !_ri.GetNodeParameterValue(node, TfToken(input)).IsEmpty() ||
            _GetConnection(node, input, &connection);
 }
 
 bool
-_Translator::_GetConnection(const TfToken& node, const TfToken& input,
+_Translator::_GetConnection(const TfToken& node, const char* input,
                             _Connection* connection) const
 {
-    const auto connections = _ri.GetNodeInputConnection(node, input);
+    const auto connections = _ri.GetNodeInputConnection(node, TfToken(input));
     if (connections.empty()) {
         return false;
     }
@@ -333,7 +292,7 @@ _Translator::_GetConnection(const TfToken& node, const TfToken& input,
 
 // The node connected to input, which must be the output of a node of type.
 bool
-_Translator::_GetUpstream(const TfToken& node, const TfToken& input,
+_Translator::_GetUpstream(const TfToken& node, const char* input,
                           const TfToken& type, const TfToken& output,
                           TfToken* upstream)
 {
@@ -341,8 +300,8 @@ _Translator::_GetUpstream(const TfToken& node, const TfToken& input,
     if (!_GetConnection(node, input, &connection) ||
         _ri.GetNodeType(connection.upstreamNodeName) != type ||
         connection.upstreamOutputName != output) {
-        return _Fail(node, "input " + input.GetString() + " must be connected to a " +
-                           type.GetString() + " " + output.GetString());
+        return _Fail(node, TfStringPrintf("input %s must be connected to a %s %s", input,
+                                          type.GetText(), output.GetText()));
     }
     *upstream = connection.upstreamNodeName;
     return true;
@@ -351,21 +310,21 @@ _Translator::_GetUpstream(const TfToken& node, const TfToken& input,
 // The value of an unconnected input, or fallback when it is unauthored.
 template <typename T>
 bool
-_Translator::_GetValue(const TfToken& node, const TfToken& input,
+_Translator::_GetValue(const TfToken& node, const char* input,
                        const T& fallback, T* value)
 {
     _Connection connection;
     if (_GetConnection(node, input, &connection)) {
-        return _Fail(node, "input " + input.GetString() + " must not be connected");
+        return _Fail(node, TfStringPrintf("input %s must not be connected", input));
     }
-    const VtValue authored = _ri.GetNodeParameterValue(node, input);
+    const VtValue authored = _ri.GetNodeParameterValue(node, TfToken(input));
     if (authored.IsEmpty()) {
         *value = fallback;
         return true;
     }
     const VtValue cast = VtValue::Cast<T>(authored);
     if (cast.IsEmpty()) {
-        return _Fail(node, "input " + input.GetString() + " has an unexpected type");
+        return _Fail(node, TfStringPrintf("input %s has an unexpected type", input));
     }
     *value = cast.UncheckedGet<T>();
     return true;
@@ -376,7 +335,7 @@ _Translator::_GetValue(const TfToken& node, const TfToken& input,
 // feeds the input.
 template <typename T>
 bool
-_Translator::_GetSource(const TfToken& node, const TfToken& input,
+_Translator::_GetSource(const TfToken& node, const char* input,
                         const T& fallback, _Source* source)
 {
     const TfToken& output = std::is_same<T, float>::value ?
@@ -409,7 +368,7 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
 // A texture through a PxrRemap or PxrColorCorrect, as an ImageMap followed by
 // a ColorCorrectHsvMap or ClampMap when needed.
 bool
-_Translator::_GetAdjustedImage(const TfToken& node, const TfToken& input,
+_Translator::_GetAdjustedImage(const TfToken& node, const char* input,
                                const TfToken& type, const TfToken& output,
                                _Source* source)
 {
@@ -419,7 +378,7 @@ _Translator::_GetAdjustedImage(const TfToken& node, const TfToken& input,
     bool clamp;
     if (!_GetUpstream(node, input, type, output, &name) ||
         !_GetAdjustment(name, &scale, &offset, &clamp) ||
-        !_GetImage(name, _tokens->inputRGB, _tokens->resultRGB, &image)) {
+        !_GetImage(name, "inputRGB", _tokens->resultRGB, &image)) {
         return false;
     }
     image.gain *= scale;
@@ -431,7 +390,7 @@ _Translator::_GetAdjustedImage(const TfToken& node, const TfToken& input,
     // scales with its input, so it can follow ImageMap's gain.
     GfVec3f hsv(0.0f, 1.0f, 1.0f);
     if (type == _tokens->PxrColorCorrect &&
-        !_GetValue(name, _tokens->hsv, hsv, &hsv)) {
+        !_GetValue(name, "hsv", hsv, &hsv)) {
         return false;
     }
     if (hsv[2] != 1.0f) {
@@ -467,10 +426,10 @@ _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
         float inMin, inMax, min, max;
         if (!_CheckInputs(node, {"inputRGB", "inputMin", "inputMax",
                                  "outputMin", "outputMax"}) ||
-            !_GetValue(node, _tokens->inputMin, 0.0f, &inMin) ||
-            !_GetValue(node, _tokens->inputMax, 1.0f, &inMax) ||
-            !_GetValue(node, _tokens->outputMin, 0.0f, &min) ||
-            !_GetValue(node, _tokens->outputMax, 1.0f, &max)) {
+            !_GetValue(node, "inputMin", 0.0f, &inMin) ||
+            !_GetValue(node, "inputMax", 1.0f, &inMax) ||
+            !_GetValue(node, "outputMin", 0.0f, &min) ||
+            !_GetValue(node, "outputMax", 1.0f, &max)) {
             return false;
         }
         if (inMin == inMax) {
@@ -486,7 +445,7 @@ _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
     }
     float exposure;
     if (!_CheckInputs(node, {"inputRGB", "exposure", "hsv"}) ||
-        !_GetValue(node, _tokens->exposure, 0.0f, &exposure)) {
+        !_GetValue(node, "exposure", 0.0f, &exposure)) {
         return false;
     }
     *scale = std::exp2(exposure);
@@ -496,7 +455,7 @@ _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
 
 // alphaScale and alphaOffset only change resultA, which is never used.
 bool
-_Translator::_GetImage(const TfToken& node, const TfToken& input,
+_Translator::_GetImage(const TfToken& node, const char* input,
                        const TfToken& output, _Image* image)
 {
     TfToken texture;
@@ -505,9 +464,9 @@ _Translator::_GetImage(const TfToken& node, const TfToken& input,
                                   "colorScale", "colorOffset", "missingColor",
                                   "alphaScale", "alphaOffset"}) &&
            _GetFilename(texture, TfToken(), &image->filename) &&
-           _GetValue(texture, _tokens->colorScale, GfVec3f(1.0f), &image->gain) &&
-           _GetValue(texture, _tokens->colorOffset, GfVec3f(0.0f), &image->offset) &&
-           _GetValue(texture, _tokens->missingColor, GfVec3f(1.0f, 0.0f, 1.0f),
+           _GetValue(texture, "colorScale", GfVec3f(1.0f), &image->gain) &&
+           _GetValue(texture, "colorOffset", GfVec3f(0.0f), &image->offset) &&
+           _GetValue(texture, "missingColor", GfVec3f(1.0f, 0.0f, 1.0f),
                      &image->missing);
 }
 
@@ -520,14 +479,14 @@ _Translator::_GetFilename(const TfToken& node, const TfToken& colorspace,
                           std::string* filename)
 {
     const TfToken space(
-        _AsString(_ri.GetNodeParameterValue(node, _tokens->filename_colorspace)));
+        _AsString(_ri.GetNodeParameterValue(node, TfToken("filename_colorspace"))));
     if (colorspace.IsEmpty() ? (!space.IsEmpty() && space != _tokens->rendering &&
                                 space != _tokens->data)
                              : space != colorspace) {
         return _Fail(node, "filename_colorspace '" + space.GetString() +
                            "' is not supported");
     }
-    *filename = _AsString(_ri.GetNodeParameterValue(node, _tokens->filename));
+    *filename = _AsString(_ri.GetNodeParameterValue(node, TfToken("filename")));
     if (filename->empty()) {
         return _Fail(node, "filename is empty");
     }
@@ -554,7 +513,7 @@ _Translator::_GetSurface(const TfToken& surface, TfToken* layer)
         if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
             !_CheckInputs(surface,
                           {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
-            !_GetUpstream(surface, _tokens->inputMaterial, _tokens->PxrLayerMixer,
+            !_GetUpstream(surface, "inputMaterial", _tokens->PxrLayerMixer,
                           _tokens->pxrMaterialOut, &mixer) ||
             !_GetLayer(mixer, layer) ||
             !_CheckInputs(*layer, {"enableDiffuse", "enableSpecular", "specularGain",
@@ -577,13 +536,13 @@ _Translator::_GetSurface(const TfToken& surface, TfToken* layer)
     }
     // RenderMan ignores the single scatter and glow inputs unless their lobe
     // is enabled, and these lobes are not translated.
-    for (const TfToken& lobe : {_tokens->enableSinglescatter, _tokens->enableGlow}) {
+    for (const char* lobe : {"enableSinglescatter", "enableGlow"}) {
         int enabled = 0;
         if (!_GetValue(*layer, lobe, 0, &enabled)) {
             return false;
         }
         if (enabled) {
-            return _Fail(*layer, lobe.GetString() + " is not supported");
+            return _Fail(*layer, std::string(lobe) + " is not supported");
         }
     }
     return true;
@@ -600,26 +559,25 @@ _Translator::_GetLayer(const TfToken& mixer, TfToken* layer)
         return false;
     }
     _Connection connection;
-    if (!_GetConnection(mixer, _tokens->baselayer, &connection)) {
+    if (!_GetConnection(mixer, "baselayer", &connection)) {
         return _Fail(mixer, "baselayer must be connected");
     }
-    TfToken chosen = _tokens->baselayer;
+    std::string chosen = "baselayer";
     for (int i = 1; i <= 4; ++i) {
-        const TfToken name(TfStringPrintf("layer%d", i));
+        const std::string name = TfStringPrintf("layer%d", i);
         int enabled = 0;
-        if (!_GetValue(mixer, TfToken(name.GetString() + "Enabled"), i == 1 ? 1 : 0,
-                       &enabled)) {
+        if (!_GetValue(mixer, (name + "Enabled").c_str(), i == 1 ? 1 : 0, &enabled)) {
             return false;
         }
         if (enabled) {
-            if (!_GetConnection(mixer, name, &connection)) {
-                return _Fail(mixer, name.GetString() + " is enabled but not connected");
+            if (!_GetConnection(mixer, name.c_str(), &connection)) {
+                return _Fail(mixer, name + " is enabled but not connected");
             }
             chosen = name;
         }
     }
-    return _GetUpstream(mixer, chosen, _tokens->PxrLayer, _tokens->pxrMaterialOut,
-                        layer);
+    return _GetUpstream(mixer, chosen.c_str(), _tokens->PxrLayer,
+                        _tokens->pxrMaterialOut, layer);
 }
 
 // Base colour and metallic. PxrMetallicWorkflow feeds diffuse
@@ -632,36 +590,36 @@ _Translator::_GetBase(const TfToken& layer, _Source* albedo, _Source* metallic,
     _Connection connection;
     *metallic = {TfToken(), VtValue(0.0f)};
     *hasWorkflow =
-        _GetConnection(layer, _tokens->diffuseColor, &connection) &&
+        _GetConnection(layer, "diffuseColor", &connection) &&
         _ri.GetNodeType(connection.upstreamNodeName) == _tokens->PxrMetallicWorkflow;
     if (*hasWorkflow) {
         const TfToken workflow = connection.upstreamNodeName;
-        const std::pair<TfToken, TfToken> outputs[] = {
-            {_tokens->diffuseColor, _tokens->resultDiffuseRGB},
-            {_tokens->specularFaceColor, _tokens->resultSpecularFaceRGB},
-            {_tokens->specularEdgeColor, _tokens->resultSpecularEdgeRGB},
+        const std::pair<const char*, TfToken> outputs[] = {
+            {"diffuseColor", _tokens->resultDiffuseRGB},
+            {"specularFaceColor", _tokens->resultSpecularFaceRGB},
+            {"specularEdgeColor", _tokens->resultSpecularEdgeRGB},
         };
         for (const auto& [input, output] : outputs) {
             if (!_GetConnection(layer, input, &connection) ||
                 connection.upstreamNodeName != workflow ||
                 connection.upstreamOutputName != output) {
-                return _Fail(layer, input.GetString() + " must be connected to " +
+                return _Fail(layer, std::string(input) + " must be connected to " +
                                     workflow.GetString() + "." + output.GetString());
             }
         }
         if (!_CheckInputs(workflow, {"baseColor", "metallic"}) ||
-            !_GetSource(workflow, _tokens->baseColor, GfVec3f(0.2f, 0.5f, 0.8f), albedo) ||
-            !_GetSource(workflow, _tokens->metallic, 0.0f, metallic) ||
-            !_GetSource(layer, _tokens->specularGain, 0.0f, specular)) {
+            !_GetSource(workflow, "baseColor", GfVec3f(0.2f, 0.5f, 0.8f), albedo) ||
+            !_GetSource(workflow, "metallic", 0.0f, metallic) ||
+            !_GetSource(layer, "specularGain", 0.0f, specular)) {
             return false;
         }
     } else {
         // Without a workflow, only the default black specular colours are
         // supported: RenderMan renders no specular from them.
         GfVec3f face, edge;
-        if (!_GetSource(layer, _tokens->diffuseColor, GfVec3f(0.18f), albedo) ||
-            !_GetValue(layer, _tokens->specularFaceColor, GfVec3f(0.0f), &face) ||
-            !_GetValue(layer, _tokens->specularEdgeColor, GfVec3f(0.0f), &edge)) {
+        if (!_GetSource(layer, "diffuseColor", GfVec3f(0.18f), albedo) ||
+            !_GetValue(layer, "specularFaceColor", GfVec3f(0.0f), &face) ||
+            !_GetValue(layer, "specularEdgeColor", GfVec3f(0.0f), &edge)) {
             return false;
         }
         if (face != GfVec3f(0.0f) || edge != GfVec3f(0.0f)) {
@@ -678,34 +636,34 @@ _Translator::_GetBase(const TfToken& layer, _Source* albedo, _Source* metallic,
 bool
 _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmission)
 {
-    if (!_GetValue(layer, _tokens->enableRR, 0, enableRR)) {
+    if (!_GetValue(layer, "enableRR", 0, enableRR)) {
         return false;
     }
     if (!*enableRR) {
         // RenderMan ignores the rr inputs, but not diffuseGain.
         *transmission = {TfToken(), VtValue(0.0f)};
-        return !_IsAuthored(layer, _tokens->diffuseGain) ||
+        return !_IsAuthored(layer, "diffuseGain") ||
                _Fail(layer, "diffuseGain is only supported with enableRR");
     }
 
     _Source reflection;
-    if (!_GetSource(layer, _tokens->rrRefractionGain, 0.0f, transmission) ||
-        !_GetSource(layer, _tokens->rrReflectionGain, 0.0f, &reflection)) {
+    if (!_GetSource(layer, "rrRefractionGain", 0.0f, transmission) ||
+        !_GetSource(layer, "rrReflectionGain", 0.0f, &reflection)) {
         return false;
     }
     if (!(reflection == *transmission)) {
         return _Fail(layer, "rrReflectionGain must match rrRefractionGain");
     }
 
-    if (!_IsAuthored(layer, _tokens->diffuseGain)) {
+    if (!_IsAuthored(layer, "diffuseGain")) {
         return true;
     }
     TfToken invert;
     _Source inverted;
-    if (!_GetUpstream(layer, _tokens->diffuseGain, _tokens->PxrInvert,
+    if (!_GetUpstream(layer, "diffuseGain", _tokens->PxrInvert,
                       _tokens->resultR, &invert) ||
         !_CheckInputs(invert, {"inputRGB"}) ||
-        !_GetSource(invert, _tokens->inputRGB, GfVec3f(0.0f), &inverted)) {
+        !_GetSource(invert, "inputRGB", GfVec3f(0.0f), &inverted)) {
         return false;
     }
     if (inverted.texture.IsEmpty() || inverted.texture != transmission->texture) {
@@ -730,7 +688,7 @@ _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
                             _Source* albedo, float* radius, GfVec3f* color)
 {
     int enable = 0;
-    if (!_GetValue(layer, _tokens->enableSubsurface, 0, &enable)) {
+    if (!_GetValue(layer, "enableSubsurface", 0, &enable)) {
         return false;
     }
     *albedo = diffuse;
@@ -743,12 +701,12 @@ _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
     _Source gain, subsurfaceColor, tint;
     float dmfp;
     GfVec3f dmfpColor;
-    if (!_GetSource(layer, _tokens->subsurfaceGain, 0.0f, &gain) ||
-        !_GetSource(layer, _tokens->subsurfaceColor,
+    if (!_GetSource(layer, "subsurfaceGain", 0.0f, &gain) ||
+        !_GetSource(layer, "subsurfaceColor",
                     GfVec3f(0.83f, 0.791f, 0.753f), &subsurfaceColor) ||
-        !_GetSource(layer, _tokens->subsurfacePostTint, GfVec3f(1.0f), &tint) ||
-        !_GetValue(layer, _tokens->subsurfaceDmfp, 10.0f, &dmfp) ||
-        !_GetValue(layer, _tokens->subsurfaceDmfpColor,
+        !_GetSource(layer, "subsurfacePostTint", GfVec3f(1.0f), &tint) ||
+        !_GetValue(layer, "subsurfaceDmfp", 10.0f, &dmfp) ||
+        !_GetValue(layer, "subsurfaceDmfpColor",
                    GfVec3f(0.851f, 0.557f, 0.395f), &dmfpColor)) {
         return false;
     }
@@ -778,10 +736,10 @@ _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
 bool
 _Translator::_GetNormalMap(const TfToken& layer, TfToken* normalMap)
 {
-    if (!_IsAuthored(layer, _tokens->bumpNormal)) {
+    if (!_IsAuthored(layer, "bumpNormal")) {
         return true;
     }
-    if (!_GetUpstream(layer, _tokens->bumpNormal, _tokens->PxrNormalMap,
+    if (!_GetUpstream(layer, "bumpNormal", _tokens->PxrNormalMap,
                       _tokens->resultN, normalMap)) {
         return false;
     }
@@ -791,8 +749,8 @@ _Translator::_GetNormalMap(const TfToken& layer, TfToken* normalMap)
     if (!_CheckInputs(*normalMap, {"filename", "filename_colorspace",
                                     "orientation", "bumpScale"}) ||
         !_GetFilename(*normalMap, _tokens->data, &image.filename) ||
-        !_GetValue(*normalMap, _tokens->orientation, 2, &orientation) ||
-        !_GetValue(*normalMap, _tokens->bumpScale, 1.0f, &scale)) {
+        !_GetValue(*normalMap, "orientation", 2, &orientation) ||
+        !_GetValue(*normalMap, "bumpScale", 1.0f, &scale)) {
         return false;
     }
     if (orientation < 0 || orientation > 2) {
@@ -951,19 +909,19 @@ _Translator::Translate()
     _Material material;
     bool hasWorkflow;
     if (!_GetSurface(surface, &layer) ||
-        !_GetSource(surface, _tokens->presence, 1.0f, &material.presence) ||
+        !_GetSource(surface, "presence", 1.0f, &material.presence) ||
         !_GetBase(layer, &material.albedo, &material.metallic, &material.specular,
                   &hasWorkflow)) {
         return nullptr;
     }
 
     int enableRR = 0;
-    if (!_GetValue(layer, _tokens->enableDiffuse, 1, &material.enableDiffuse) ||
-        !_GetValue(layer, _tokens->enableSpecular, 0, &material.enableSpecular) ||
-        !_GetSource(layer, _tokens->specularRoughness, 0.2f, &material.roughness) ||
+    if (!_GetValue(layer, "enableDiffuse", 1, &material.enableDiffuse) ||
+        !_GetValue(layer, "enableSpecular", 0, &material.enableSpecular) ||
+        !_GetSource(layer, "specularRoughness", 0.2f, &material.roughness) ||
         !_GetGlass(layer, &enableRR, &material.transmission) ||
-        !_GetValue(layer, _tokens->rrRoughness, 0.1f, &material.rrRoughness) ||
-        !_GetValue(layer, _tokens->rrIor, 1.5f, &material.rrIor)) {
+        !_GetValue(layer, "rrRoughness", 0.1f, &material.rrRoughness) ||
+        !_GetValue(layer, "rrIor", 1.5f, &material.rrIor)) {
         return nullptr;
     }
     if (!_GetSubsurface(layer, material.albedo, &material.diffuse,
