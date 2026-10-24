@@ -157,13 +157,14 @@ struct _Image
     GfVec3f missing = GfVec3f(1.0f, 0.0f, 1.0f);
 };
 
-// A ColorCorrectHsvMap after the ImageMap called input: PxrColorCorrect's
-// hue offset and saturation factor.
-struct _Hsv
+// A ColorCorrectHsvMap or ClampMap after the ImageMap called input. The hue
+// offset and saturation factor are PxrColorCorrect's, for ColorCorrectHsvMap.
+struct _Correction
 {
+    TfToken type;
     TfToken input;
-    float hue;
-    float saturation;
+    float hue = 0.0f;
+    float saturation = 1.0f;
 };
 
 // An OpMap: op1 * op1Factor added to or multiplied by op2 * op2Factor.
@@ -245,8 +246,7 @@ private:
     std::unique_ptr<HdDataSourceMaterialNetworkInterface> _out;
     std::map<TfToken, _Image> _images;  // ImageMap name -> image
     std::map<TfToken, _Op> _ops;        // OpMap name -> operation
-    std::map<TfToken, _Hsv> _hsvs;      // ColorCorrectHsvMap name -> correction
-    std::map<TfToken, TfToken> _clamps; // ClampMap name -> input
+    std::map<TfToken, _Correction> _corrections; // node name -> correction
     std::string _error;
 };
 
@@ -414,12 +414,13 @@ _Translator::_GetAdjustedImage(const TfToken& node, const TfToken& input,
     }
     if (hsv[0] != 0.0f || hsv[1] != 1.0f) {
         const TfToken hsvName(name.GetString() + "_hsv");
-        _hsvs[hsvName] = {name, hsv[0], hsv[1]};
+        _corrections[hsvName] = {_tokens->ColorCorrectHsvMap, name, hsv[0],
+                                 hsv[1]};
         *source = {hsvName, VtValue()};
     }
     if (clamp) {
         const TfToken clampName(name.GetString() + "_clamp");
-        _clamps[clampName] = name;
+        _corrections[clampName] = {_tokens->ClampMap, name};
         *source = {clampName, VtValue()};
     }
     return true;
@@ -919,18 +920,14 @@ _Translator::Translate()
 
     // RenderMan's hue offset is in turns, ColorCorrectHsvMap's in degrees.
     // RenderMan also clamps the saturation to 1, which this does not.
-    for (const auto& [name, hsv] : _hsvs) {
-        _out->SetNodeType(name, _tokens->ColorCorrectHsvMap);
+    for (const auto& [name, correction] : _corrections) {
+        _out->SetNodeType(name, correction.type);
         _out->SetNodeInputConnection(name, TfToken("input"),
-                                     {{hsv.input, _tokens->out}});
-        _Set(name, "hue_shift", VtValue(hsv.hue * 360.0f));
-        _Set(name, "saturation_factor", VtValue(hsv.saturation));
-    }
-
-    for (const auto& [name, input] : _clamps) {
-        _out->SetNodeType(name, _tokens->ClampMap);
-        _out->SetNodeInputConnection(name, TfToken("input"),
-                                     {{input, _tokens->out}});
+                                     {{correction.input, _tokens->out}});
+        if (correction.type == _tokens->ColorCorrectHsvMap) {
+            _Set(name, "hue_shift", VtValue(correction.hue * 360.0f));
+            _Set(name, "saturation_factor", VtValue(correction.saturation));
+        }
     }
 
     if (!normalMap.IsEmpty()) {
