@@ -672,6 +672,8 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
 
 // Subsurface. DwaBaseMaterial has one diffuse lobe, so the whole lobe
 // scatters, with albedo diffuse + gain * colour * gain * tint (clamped to 1).
+// subsurfaceColor may share diffuseColor's connection, such as a
+// PxrMetallicWorkflow's resultDiffuseRGB, and then reads the same as diffuse.
 // subsurfaceTransmitGain needs subsurfaceDoubleSided, which is never set here.
 // scattering_radius is half RenderMan's mean free path (subsurfaceDmfp *
 // subsurfaceDmfpColor * 0.1), which matched its shadow edge blur in tests.
@@ -690,12 +692,18 @@ _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
         return true;
     }
 
-    _Source gain, subsurfaceColor, tint;
+    _Connection fromSubsurface, fromDiffuse;
+    const bool shared =
+        _GetConnection(layer, "subsurfaceColor", &fromSubsurface) &&
+        _GetConnection(layer, "diffuseColor", &fromDiffuse) &&
+        fromSubsurface.upstreamNodeName == fromDiffuse.upstreamNodeName &&
+        fromSubsurface.upstreamOutputName == fromDiffuse.upstreamOutputName;
+    _Source gain, subsurfaceColor = diffuse, tint;
     float dmfp;
     GfVec3f dmfpColor;
     if (!_GetSource(layer, "subsurfaceGain", 0.0f, &gain) ||
-        !_GetSource(layer, "subsurfaceColor",
-                    GfVec3f(0.83f, 0.791f, 0.753f), &subsurfaceColor) ||
+        !(shared || _GetSource(layer, "subsurfaceColor",
+                               GfVec3f(0.83f, 0.791f, 0.753f), &subsurfaceColor)) ||
         !_GetSource(layer, "subsurfacePostTint", GfVec3f(1.0f), &tint) ||
         !_GetValue(layer, "subsurfaceDmfp", 10.0f, &dmfp) ||
         !_GetValue(layer, "subsurfaceDmfpColor",
