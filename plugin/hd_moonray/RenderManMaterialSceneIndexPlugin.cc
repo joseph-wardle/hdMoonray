@@ -174,6 +174,25 @@ struct _Op
     _Source op1, op1Factor, op2, op2Factor;
 };
 
+// The DwaBaseMaterial inputs, and the PxrNormalMap's ImageMap if there is one.
+struct _Material
+{
+    int enableDiffuse = 1;
+    _Source diffuse;
+    float radius;
+    GfVec3f radiusColor;
+    _Source albedo;
+    _Source metallic;
+    int enableSpecular = 0;
+    _Source specular;
+    _Source roughness;
+    _Source transmission;
+    float rrRoughness = 0.1f;
+    float rrIor = 1.5f;
+    _Source presence;
+    TfToken normalMap;
+};
+
 // A string, token or asset path value as a string; an asset path resolves
 // when it can.
 std::string
@@ -241,6 +260,8 @@ private:
 
     void _Set(const TfToken& node, const char* input, const _Source& source);
     void _Set(const TfToken& node, const char* input, const VtValue& value);
+    HdContainerDataSourceHandle _Write(const TfToken& surface,
+                                       const _Material& material);
 
     const HdMaterialNetworkInterface& _ri;
     std::unique_ptr<HdDataSourceMaterialNetworkInterface> _out;
@@ -675,223 +696,39 @@ _Translator::_Set(const TfToken& node, const char* input, const VtValue& value)
 }
 
 HdContainerDataSourceHandle
-_Translator::Translate()
+_Translator::_Write(const TfToken& surface, const _Material& material)
 {
-    for (const TfToken& terminal : {HdMaterialTerminalTokens->displacement,
-                                    HdMaterialTerminalTokens->volume}) {
-        if (_ri.GetTerminalConnection(terminal).first) {
-            _error = "has a " + terminal.GetString() + " terminal";
-            return nullptr;
-        }
-    }
-
-    // PxrLayerSurface <- PxrLayerMixer <- PxrLayer, or a bare PxrSurface.
-    // With only diffuseColor set, a PxrSurface renders as a PxrLayer with only
-    // diffuseColor set, so it is read as one. diffuseDoubleSided needs no
-    // translation: MoonRay lights both sides of double-sided geometry, as
-    // RenderMan does when it is on. When it is off, RenderMan leaves back
-    // faces unlit and MoonRay does not.
-    const TfToken surface =
-        _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
-            .second.upstreamNodeName;
-    _Connection connection;
-    TfToken mixer, layer;
-    if (_ri.GetNodeType(surface) == _tokens->PxrSurface) {
-        if (!_CheckInputs(surface,
-                          {"diffuseColor", "presence", "diffuseDoubleSided"})) {
-            return nullptr;
-        }
-        layer = surface;
-    } else {
-        if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
-            !_CheckInputs(surface,
-                          {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
-            !_GetUpstream(surface, _tokens->inputMaterial, _tokens->PxrLayerMixer,
-                          _tokens->pxrMaterialOut, &mixer) ||
-            !_GetLayer(mixer, &layer) ||
-            !_CheckInputs(layer, {"enableDiffuse", "enableSpecular", "specularGain",
-                                  "diffuseColor", "specularFaceColor",
-                                  "specularEdgeColor", "specularRoughness",
-                                  "bumpNormal", "enableRR", "rrRefractionGain",
-                                  "rrReflectionGain", "rrRoughness", "rrIor",
-                                  "diffuseGain", "enableSubsurface", "subsurfaceGain",
-                                  "subsurfaceColor", "subsurfaceDmfp",
-                                  "subsurfaceDmfpColor", "subsurfacePostTint",
-                                  "subsurfaceTransmitGain", "enableSinglescatter",
-                                  "singlescatterGain", "singlescatterColor",
-                                  "singlescatterMfp", "singlescatterMfpColor",
-                                  "singlescatterDirectionality", "singlescatterIor",
-                                  "singlescatterBlur", "singlescatterDirectGain",
-                                  "singlescatterDirectGainTint", "enableGlow",
-                                  "glowGain", "glowColor"})) {
-            return nullptr;
-        }
-    }
-    _Source presence;
-    if (!_GetSource(surface, _tokens->presence, 1.0f, &presence)) {
-        return nullptr;
-    }
-    // RenderMan ignores the single scatter and glow inputs unless their lobe
-    // is enabled, and these lobes are not translated.
-    for (const TfToken& lobe : {_tokens->enableSinglescatter, _tokens->enableGlow}) {
-        int enabled = 0;
-        if (!_GetValue(layer, lobe, 0, &enabled)) {
-            return nullptr;
-        }
-        if (enabled) {
-            _Fail(layer, lobe.GetString() + " is not supported");
-            return nullptr;
-        }
-    }
-
-    // Base colour and metallic. PxrMetallicWorkflow feeds diffuse
-    // base*(1-m) and specular face/edge mix(0.04, base, m) / mix(1, base, m);
-    // DwaBaseMaterial computes the same from albedo and metallic.
-    _Source albedo;
-    _Source metallic = {TfToken(), VtValue(0.0f)};
-    _Source specular;
-    const bool hasWorkflow =
-        _GetConnection(layer, _tokens->diffuseColor, &connection) &&
-        _ri.GetNodeType(connection.upstreamNodeName) == _tokens->PxrMetallicWorkflow;
-    if (hasWorkflow) {
-        const TfToken workflow = connection.upstreamNodeName;
-        const std::pair<TfToken, TfToken> outputs[] = {
-            {_tokens->diffuseColor, _tokens->resultDiffuseRGB},
-            {_tokens->specularFaceColor, _tokens->resultSpecularFaceRGB},
-            {_tokens->specularEdgeColor, _tokens->resultSpecularEdgeRGB},
-        };
-        for (const auto& [input, output] : outputs) {
-            if (!_GetConnection(layer, input, &connection) ||
-                connection.upstreamNodeName != workflow ||
-                connection.upstreamOutputName != output) {
-                _Fail(layer, input.GetString() + " must be connected to " +
-                             workflow.GetString() + "." + output.GetString());
-                return nullptr;
-            }
-        }
-        if (!_CheckInputs(workflow, {"baseColor", "metallic"}) ||
-            !_GetSource(workflow, _tokens->baseColor, GfVec3f(0.2f, 0.5f, 0.8f), &albedo) ||
-            !_GetSource(workflow, _tokens->metallic, 0.0f, &metallic) ||
-            !_GetSource(layer, _tokens->specularGain, 0.0f, &specular)) {
-            return nullptr;
-        }
-    } else {
-        // Without a workflow, only the default black specular colours are
-        // supported: RenderMan renders no specular from them.
-        GfVec3f face, edge;
-        if (!_GetSource(layer, _tokens->diffuseColor, GfVec3f(0.18f), &albedo) ||
-            !_GetValue(layer, _tokens->specularFaceColor, GfVec3f(0.0f), &face) ||
-            !_GetValue(layer, _tokens->specularEdgeColor, GfVec3f(0.0f), &edge)) {
-            return nullptr;
-        }
-        if (face != GfVec3f(0.0f) || edge != GfVec3f(0.0f)) {
-            _Fail(layer, "specular colours need a PxrMetallicWorkflow");
-            return nullptr;
-        }
-        specular = {TfToken(), VtValue(0.0f)};
-    }
-
-    int enableDiffuse = 1;
-    int enableSpecular = 0;
-    _Source roughness;
-    _Source transmission;
-    int enableRR = 0;
-    float rrRoughness = 0.1f;
-    float rrIor = 1.5f;
-    if (!_GetValue(layer, _tokens->enableDiffuse, 1, &enableDiffuse) ||
-        !_GetValue(layer, _tokens->enableSpecular, 0, &enableSpecular) ||
-        !_GetSource(layer, _tokens->specularRoughness, 0.2f, &roughness) ||
-        !_GetGlass(layer, &enableRR, &transmission) ||
-        !_GetValue(layer, _tokens->rrRoughness, 0.1f, &rrRoughness) ||
-        !_GetValue(layer, _tokens->rrIor, 1.5f, &rrIor)) {
-        return nullptr;
-    }
-    _Source diffuse;
-    float radius;
-    GfVec3f radiusColor;
-    if (!_GetSubsurface(layer, albedo, &diffuse, &radius, &radiusColor)) {
-        return nullptr;
-    }
-    if (!enableDiffuse && !(diffuse == albedo)) {
-        _Fail(layer, "enableSubsurface needs enableDiffuse");
-        return nullptr;
-    }
-    // RenderMan's glass reflects even without specular colours or
-    // enableSpecular; DwaBaseMaterial reflects only through its specular lobe.
-    // rrReflectionGain matches rrRefractionGain (see _GetGlass).
-    if (enableRR && !hasWorkflow) {
-        enableSpecular = 1;
-        specular = transmission;
-    }
-
-    // PxrNormalMap decodes texels as 2*t-1, scales red and green by
-    // bumpScale and, on the left-handed meshes Houdini writes, tilts the
-    // normal towards +s for red and -t for green with its default orientation
-    // (2, Custom); orientation 0 (OpenGL) flips red and green from that, and
-    // 1 (DirectX) flips red. TransformNormalMap tilts it towards +s and +t,
-    // so the ImageMap applies those signs and the scale. A missing texture or
-    // tile decodes to the unbent normal.
-    TfToken normalMap;
-    if (_IsAuthored(layer, _tokens->bumpNormal)) {
-        if (!_GetUpstream(layer, _tokens->bumpNormal, _tokens->PxrNormalMap,
-                          _tokens->resultN, &normalMap)) {
-            return nullptr;
-        }
-        _Image& image = _images[normalMap];
-        int orientation;
-        float scale;
-        if (!_CheckInputs(normalMap, {"filename", "filename_colorspace",
-                                      "orientation", "bumpScale"}) ||
-            !_GetFilename(normalMap, _tokens->data, &image.filename) ||
-            !_GetValue(normalMap, _tokens->orientation, 2, &orientation) ||
-            !_GetValue(normalMap, _tokens->bumpScale, 1.0f, &scale)) {
-            return nullptr;
-        }
-        if (orientation < 0 || orientation > 2) {
-            _Fail(normalMap, "orientation must be 0, 1 or 2");
-            return nullptr;
-        }
-        // Red and green signs for orientations 0, 1 and 2.
-        static const float signs[3][2] = {{-1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, -1.0f}};
-        const float red = signs[orientation][0] * scale;
-        const float green = signs[orientation][1] * scale;
-        image.gain = GfVec3f(red, green, 1.0f);
-        image.offset = GfVec3f((1.0f - red) / 2.0f, (1.0f - green) / 2.0f, 0.0f);
-        image.missing = GfVec3f(0.5f, 0.5f, 1.0f);
-    }
-
     // Write the moonray network. Nodes keep their RenderMan names.
     _out = std::make_unique<HdDataSourceMaterialNetworkInterface>(
         _ri.GetMaterialPrimPath(), HdRetainedContainerDataSource::New(), nullptr);
 
-    const TfToken& material = surface;
-    _out->SetNodeType(material, _tokens->DwaBaseMaterial);
-    _Set(material, "show_diffuse", VtValue(enableDiffuse != 0));
-    _Set(material, "albedo", diffuse);
-    _Set(material, "diffuse_roughness", VtValue(0.0f));
-    _Set(material, "bssrdf", VtValue(TfToken("normalized diffusion")));
-    _Set(material, "scattering_radius", VtValue(radius));
-    _Set(material, "scattering_color", VtValue(radiusColor));
-    _Set(material, "metallic", metallic);
-    _Set(material, "metallic_color", albedo);
-    _Set(material, "metallic_edge_color", albedo);
-    _Set(material, "show_specular", VtValue(enableSpecular != 0));
-    _Set(material, "specular", specular);
-    _Set(material, "refractive_index", VtValue(1.5f));
-    _Set(material, "specular_model", VtValue(TfToken("Beckmann")));
-    _Set(material, "roughness", roughness);
+    _out->SetNodeType(surface, _tokens->DwaBaseMaterial);
+    _Set(surface, "show_diffuse", VtValue(material.enableDiffuse != 0));
+    _Set(surface, "albedo", material.diffuse);
+    _Set(surface, "diffuse_roughness", VtValue(0.0f));
+    _Set(surface, "bssrdf", VtValue(TfToken("normalized diffusion")));
+    _Set(surface, "scattering_radius", VtValue(material.radius));
+    _Set(surface, "scattering_color", VtValue(material.radiusColor));
+    _Set(surface, "metallic", material.metallic);
+    _Set(surface, "metallic_color", material.albedo);
+    _Set(surface, "metallic_edge_color", material.albedo);
+    _Set(surface, "show_specular", VtValue(material.enableSpecular != 0));
+    _Set(surface, "specular", material.specular);
+    _Set(surface, "refractive_index", VtValue(1.5f));
+    _Set(surface, "specular_model", VtValue(TfToken("Beckmann")));
+    _Set(surface, "roughness", material.roughness);
     // PxrLayer rrRefractionColor 1, thinGlass 0.
-    _Set(material, "show_transmission", VtValue(true));
-    _Set(material, "transmission", transmission);
-    _Set(material, "transmission_color", VtValue(GfVec3f(1.0f)));
-    _Set(material, "use_independent_transmission_roughness", VtValue(true));
-    _Set(material, "independent_transmission_roughness", VtValue(rrRoughness));
-    _Set(material, "use_independent_transmission_refractive_index", VtValue(true));
-    _Set(material, "independent_transmission_refractive_index", VtValue(rrIor));
-    _Set(material, "thin_geometry", VtValue(false));
-    _Set(material, "presence", presence);
+    _Set(surface, "show_transmission", VtValue(true));
+    _Set(surface, "transmission", material.transmission);
+    _Set(surface, "transmission_color", VtValue(GfVec3f(1.0f)));
+    _Set(surface, "use_independent_transmission_roughness", VtValue(true));
+    _Set(surface, "independent_transmission_roughness", VtValue(material.rrRoughness));
+    _Set(surface, "use_independent_transmission_refractive_index", VtValue(true));
+    _Set(surface, "independent_transmission_refractive_index", VtValue(material.rrIor));
+    _Set(surface, "thin_geometry", VtValue(false));
+    _Set(surface, "presence", material.presence);
     _out->SetTerminalConnection(HdMaterialTerminalTokens->surface,
-                                {material, HdMaterialTerminalTokens->surface});
+                                {surface, HdMaterialTerminalTokens->surface});
 
     // PxrTexture applies colorScale and colorOffset to missingColor too, and
     // so does ImageMap's gain and offset to default_color.
@@ -930,21 +767,201 @@ _Translator::Translate()
         }
     }
 
-    if (!normalMap.IsEmpty()) {
-        const TfToken tangent(normalMap.GetString() + "_tangent");
-        const TfToken normal(normalMap.GetString() + "_normal");
+    if (!material.normalMap.IsEmpty()) {
+        const TfToken tangent(material.normalMap.GetString() + "_tangent");
+        const TfToken normal(material.normalMap.GetString() + "_normal");
         _out->SetNodeType(tangent, _tokens->TransformNormalMap);
         _out->SetNodeInputConnection(tangent, TfToken("input_normal"),
-                                     {{normalMap, _tokens->out}});
+                                     {{material.normalMap, _tokens->out}});
         _out->SetNodeType(normal, _tokens->RgbToNormalMap);
         _out->SetNodeInputConnection(normal, TfToken("input"),
                                      {{tangent, _tokens->out}});
-        _out->SetNodeInputConnection(material, TfToken("input_normal"),
+        _out->SetNodeInputConnection(surface, TfToken("input_normal"),
                                      {{normal, _tokens->out}});
-        _Set(material, "input_normal_dial", VtValue(1.0f));
+        _Set(surface, "input_normal_dial", VtValue(1.0f));
     }
 
     return _out->Finish();
+}
+
+HdContainerDataSourceHandle
+_Translator::Translate()
+{
+    for (const TfToken& terminal : {HdMaterialTerminalTokens->displacement,
+                                    HdMaterialTerminalTokens->volume}) {
+        if (_ri.GetTerminalConnection(terminal).first) {
+            _error = "has a " + terminal.GetString() + " terminal";
+            return nullptr;
+        }
+    }
+
+    // PxrLayerSurface <- PxrLayerMixer <- PxrLayer, or a bare PxrSurface.
+    // With only diffuseColor set, a PxrSurface renders as a PxrLayer with only
+    // diffuseColor set, so it is read as one. diffuseDoubleSided needs no
+    // translation: MoonRay lights both sides of double-sided geometry, as
+    // RenderMan does when it is on. When it is off, RenderMan leaves back
+    // faces unlit and MoonRay does not.
+    const TfToken surface =
+        _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
+            .second.upstreamNodeName;
+    _Connection connection;
+    TfToken mixer, layer;
+    _Material material;
+    if (_ri.GetNodeType(surface) == _tokens->PxrSurface) {
+        if (!_CheckInputs(surface,
+                          {"diffuseColor", "presence", "diffuseDoubleSided"})) {
+            return nullptr;
+        }
+        layer = surface;
+    } else {
+        if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
+            !_CheckInputs(surface,
+                          {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
+            !_GetUpstream(surface, _tokens->inputMaterial, _tokens->PxrLayerMixer,
+                          _tokens->pxrMaterialOut, &mixer) ||
+            !_GetLayer(mixer, &layer) ||
+            !_CheckInputs(layer, {"enableDiffuse", "enableSpecular", "specularGain",
+                                  "diffuseColor", "specularFaceColor",
+                                  "specularEdgeColor", "specularRoughness",
+                                  "bumpNormal", "enableRR", "rrRefractionGain",
+                                  "rrReflectionGain", "rrRoughness", "rrIor",
+                                  "diffuseGain", "enableSubsurface", "subsurfaceGain",
+                                  "subsurfaceColor", "subsurfaceDmfp",
+                                  "subsurfaceDmfpColor", "subsurfacePostTint",
+                                  "subsurfaceTransmitGain", "enableSinglescatter",
+                                  "singlescatterGain", "singlescatterColor",
+                                  "singlescatterMfp", "singlescatterMfpColor",
+                                  "singlescatterDirectionality", "singlescatterIor",
+                                  "singlescatterBlur", "singlescatterDirectGain",
+                                  "singlescatterDirectGainTint", "enableGlow",
+                                  "glowGain", "glowColor"})) {
+            return nullptr;
+        }
+    }
+    if (!_GetSource(surface, _tokens->presence, 1.0f, &material.presence)) {
+        return nullptr;
+    }
+    // RenderMan ignores the single scatter and glow inputs unless their lobe
+    // is enabled, and these lobes are not translated.
+    for (const TfToken& lobe : {_tokens->enableSinglescatter, _tokens->enableGlow}) {
+        int enabled = 0;
+        if (!_GetValue(layer, lobe, 0, &enabled)) {
+            return nullptr;
+        }
+        if (enabled) {
+            _Fail(layer, lobe.GetString() + " is not supported");
+            return nullptr;
+        }
+    }
+
+    // Base colour and metallic. PxrMetallicWorkflow feeds diffuse
+    // base*(1-m) and specular face/edge mix(0.04, base, m) / mix(1, base, m);
+    // DwaBaseMaterial computes the same from albedo and metallic.
+    material.metallic = {TfToken(), VtValue(0.0f)};
+    const bool hasWorkflow =
+        _GetConnection(layer, _tokens->diffuseColor, &connection) &&
+        _ri.GetNodeType(connection.upstreamNodeName) == _tokens->PxrMetallicWorkflow;
+    if (hasWorkflow) {
+        const TfToken workflow = connection.upstreamNodeName;
+        const std::pair<TfToken, TfToken> outputs[] = {
+            {_tokens->diffuseColor, _tokens->resultDiffuseRGB},
+            {_tokens->specularFaceColor, _tokens->resultSpecularFaceRGB},
+            {_tokens->specularEdgeColor, _tokens->resultSpecularEdgeRGB},
+        };
+        for (const auto& [input, output] : outputs) {
+            if (!_GetConnection(layer, input, &connection) ||
+                connection.upstreamNodeName != workflow ||
+                connection.upstreamOutputName != output) {
+                _Fail(layer, input.GetString() + " must be connected to " +
+                             workflow.GetString() + "." + output.GetString());
+                return nullptr;
+            }
+        }
+        if (!_CheckInputs(workflow, {"baseColor", "metallic"}) ||
+            !_GetSource(workflow, _tokens->baseColor, GfVec3f(0.2f, 0.5f, 0.8f),
+                        &material.albedo) ||
+            !_GetSource(workflow, _tokens->metallic, 0.0f, &material.metallic) ||
+            !_GetSource(layer, _tokens->specularGain, 0.0f, &material.specular)) {
+            return nullptr;
+        }
+    } else {
+        // Without a workflow, only the default black specular colours are
+        // supported: RenderMan renders no specular from them.
+        GfVec3f face, edge;
+        if (!_GetSource(layer, _tokens->diffuseColor, GfVec3f(0.18f),
+                        &material.albedo) ||
+            !_GetValue(layer, _tokens->specularFaceColor, GfVec3f(0.0f), &face) ||
+            !_GetValue(layer, _tokens->specularEdgeColor, GfVec3f(0.0f), &edge)) {
+            return nullptr;
+        }
+        if (face != GfVec3f(0.0f) || edge != GfVec3f(0.0f)) {
+            _Fail(layer, "specular colours need a PxrMetallicWorkflow");
+            return nullptr;
+        }
+        material.specular = {TfToken(), VtValue(0.0f)};
+    }
+
+    int enableRR = 0;
+    if (!_GetValue(layer, _tokens->enableDiffuse, 1, &material.enableDiffuse) ||
+        !_GetValue(layer, _tokens->enableSpecular, 0, &material.enableSpecular) ||
+        !_GetSource(layer, _tokens->specularRoughness, 0.2f, &material.roughness) ||
+        !_GetGlass(layer, &enableRR, &material.transmission) ||
+        !_GetValue(layer, _tokens->rrRoughness, 0.1f, &material.rrRoughness) ||
+        !_GetValue(layer, _tokens->rrIor, 1.5f, &material.rrIor)) {
+        return nullptr;
+    }
+    if (!_GetSubsurface(layer, material.albedo, &material.diffuse,
+                        &material.radius, &material.radiusColor)) {
+        return nullptr;
+    }
+    if (!material.enableDiffuse && !(material.diffuse == material.albedo)) {
+        _Fail(layer, "enableSubsurface needs enableDiffuse");
+        return nullptr;
+    }
+    // RenderMan's glass reflects even without specular colours or
+    // enableSpecular; DwaBaseMaterial reflects only through its specular lobe.
+    // rrReflectionGain matches rrRefractionGain (see _GetGlass).
+    if (enableRR && !hasWorkflow) {
+        material.enableSpecular = 1;
+        material.specular = material.transmission;
+    }
+
+    // PxrNormalMap decodes texels as 2*t-1, scales red and green by
+    // bumpScale and, on the left-handed meshes Houdini writes, tilts the
+    // normal towards +s for red and -t for green with its default orientation
+    // (2, Custom); orientation 0 (OpenGL) flips red and green from that, and
+    // 1 (DirectX) flips red. TransformNormalMap tilts it towards +s and +t,
+    // so the ImageMap applies those signs and the scale. A missing texture or
+    // tile decodes to the unbent normal.
+    if (_IsAuthored(layer, _tokens->bumpNormal)) {
+        if (!_GetUpstream(layer, _tokens->bumpNormal, _tokens->PxrNormalMap,
+                          _tokens->resultN, &material.normalMap)) {
+            return nullptr;
+        }
+        _Image& image = _images[material.normalMap];
+        int orientation;
+        float scale;
+        if (!_CheckInputs(material.normalMap, {"filename", "filename_colorspace",
+                                               "orientation", "bumpScale"}) ||
+            !_GetFilename(material.normalMap, _tokens->data, &image.filename) ||
+            !_GetValue(material.normalMap, _tokens->orientation, 2, &orientation) ||
+            !_GetValue(material.normalMap, _tokens->bumpScale, 1.0f, &scale)) {
+            return nullptr;
+        }
+        if (orientation < 0 || orientation > 2) {
+            _Fail(material.normalMap, "orientation must be 0, 1 or 2");
+            return nullptr;
+        }
+        // Red and green signs for orientations 0, 1 and 2.
+        static const float signs[3][2] = {{-1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, -1.0f}};
+        const float red = signs[orientation][0] * scale;
+        const float green = signs[orientation][1] * scale;
+        image.gain = GfVec3f(red, green, 1.0f);
+        image.offset = GfVec3f((1.0f - red) / 2.0f, (1.0f - green) / 2.0f, 0.0f);
+        image.missing = GfVec3f(0.5f, 0.5f, 1.0f);
+    }
+
+    return _Write(surface, material);
 }
 
 } // anonymous namespace
