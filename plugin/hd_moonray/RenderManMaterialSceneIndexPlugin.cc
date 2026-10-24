@@ -208,11 +208,15 @@ private:
                    const TfToken& output, _Image* image);
     bool _GetFilename(const TfToken& node, const TfToken& colorspace,
                       std::string* filename);
-    bool _GetSurface(const TfToken& surface, TfToken* layer);
-    bool _GetLayer(const TfToken& mixer, TfToken* layer);
+    bool _GetSurface(const TfToken& surface, TfToken* layer, TfToken* glass,
+                     _Source* mask);
+    bool _GetLayer(const TfToken& mixer, TfToken* layer, TfToken* glass,
+                   _Source* mask);
     bool _GetBase(const TfToken& layer, _Source* albedo, _Source* metallic,
                   _Source* specular, bool* hasWorkflow);
     bool _GetGlass(const TfToken& layer, int* enableRR, _Source* transmission);
+    bool _GetMaskedGlass(const TfToken& glass, const _Source& mask, int enableRR,
+                         _Material* material);
     bool _GetSubsurface(const TfToken& layer, const _Source& diffuse,
                         _Source* albedo, float* radius, GfVec3f* color);
     bool _GetNormalMap(const TfToken& layer, TfToken* normalMap);
@@ -500,7 +504,8 @@ _Translator::_GetFilename(const TfToken& node, const TfToken& colorspace,
 // diffuseDoubleSided is ignored: MoonRay lights both sides of double-sided
 // geometry, as RenderMan does when it is on.
 bool
-_Translator::_GetSurface(const TfToken& surface, TfToken* layer)
+_Translator::_GetSurface(const TfToken& surface, TfToken* layer, TfToken* glass,
+                         _Source* mask)
 {
     TfToken mixer;
     if (_ri.GetNodeType(surface) == _tokens->PxrSurface) {
@@ -515,7 +520,7 @@ _Translator::_GetSurface(const TfToken& surface, TfToken* layer)
                           {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
             !_GetUpstream(surface, "inputMaterial", _tokens->PxrLayerMixer,
                           _tokens->pxrMaterialOut, &mixer) ||
-            !_GetLayer(mixer, layer) ||
+            !_GetLayer(mixer, layer, glass, mask) ||
             !_CheckInputs(*layer, {"enableDiffuse", "enableSpecular", "specularGain",
                                    "diffuseColor", "specularFaceColor",
                                    "specularEdgeColor", "specularRoughness",
@@ -550,11 +555,14 @@ _Translator::_GetSurface(const TfToken& surface, TfToken* layer)
 
 // The layer RenderMan shows: the highest-numbered enabled layer, else the
 // base layer. Masks default to 1, so a layer covers everything below it.
+// When that is layer1 with a layer1Mask, it is the base layer, with layer1
+// as glass blended in by mask (see _GetMaskedGlass).
 bool
-_Translator::_GetLayer(const TfToken& mixer, TfToken* layer)
+_Translator::_GetLayer(const TfToken& mixer, TfToken* layer, TfToken* glass,
+                       _Source* mask)
 {
-    if (!_CheckInputs(mixer, {"baselayer",
-                              "layer1", "layer1Enabled", "layer2", "layer2Enabled",
+    if (!_CheckInputs(mixer, {"baselayer", "layer1", "layer1Enabled", "layer1Mask",
+                              "layer2", "layer2Enabled",
                               "layer3", "layer3Enabled", "layer4", "layer4Enabled"})) {
         return false;
     }
@@ -575,6 +583,14 @@ _Translator::_GetLayer(const TfToken& mixer, TfToken* layer)
             }
             chosen = name;
         }
+    }
+    if (chosen == "layer1" && _IsAuthored(mixer, "layer1Mask")) {
+        if (!_GetUpstream(mixer, "layer1", _tokens->PxrLayer,
+                          _tokens->pxrMaterialOut, glass) ||
+            !_GetSource(mixer, "layer1Mask", 1.0f, mask)) {
+            return false;
+        }
+        chosen = "baselayer";
     }
     return _GetUpstream(mixer, chosen.c_str(), _tokens->PxrLayer,
                         _tokens->pxrMaterialOut, layer);
@@ -668,6 +684,53 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
     }
     if (inverted.texture.IsEmpty() || inverted.texture != transmission->texture) {
         return _Fail(invert, "inputRGB must be the rrRefractionGain texture");
+    }
+    return true;
+}
+
+// A clear glass layer1 blended over the base layer by layer1Mask. The mask,
+// times rrRefractionGain, becomes DwaBaseMaterial's transmission, which
+// swaps diffuse for refraction. Reflection keeps the base layer's specular
+// and roughness, so rrReflectionGain must be 1.
+bool
+_Translator::_GetMaskedGlass(const TfToken& glass, const _Source& mask,
+                             int enableRR, _Material* material)
+{
+    if (enableRR) {
+        return _Fail(glass, "the base layer under a layer1Mask must not have enableRR");
+    }
+    if (!material->enableSpecular) {
+        return _Fail(glass, "the base layer under a layer1Mask needs enableSpecular");
+    }
+    // diffuseGain does nothing with enableDiffuse off.
+    int diffuse, specular, rr;
+    float gain, reflection;
+    if (!_CheckInputs(glass, {"enableDiffuse", "diffuseGain", "enableSpecular",
+                              "enableRR", "rrRefractionGain", "rrReflectionGain",
+                              "rrRoughness", "rrIor"}) ||
+        !_GetValue(glass, "enableDiffuse", 1, &diffuse) ||
+        !_GetValue(glass, "enableSpecular", 0, &specular) ||
+        !_GetValue(glass, "enableRR", 0, &rr) ||
+        !_GetValue(glass, "rrRefractionGain", 0.0f, &gain) ||
+        !_GetValue(glass, "rrReflectionGain", 0.0f, &reflection) ||
+        !_GetValue(glass, "rrRoughness", 0.1f, &material->rrRoughness) ||
+        !_GetValue(glass, "rrIor", 1.5f, &material->rrIor)) {
+        return false;
+    }
+    if (diffuse || specular || !rr || reflection != 1.0f) {
+        return _Fail(glass, "the layer over a layer1Mask must be clear glass: "
+                            "enableRR, no diffuse or specular, rrReflectionGain 1");
+    }
+    if (mask.texture.IsEmpty()) {
+        material->transmission = {TfToken(),
+                                  VtValue(mask.value.UncheckedGet<float>() * gain)};
+    } else if (gain == 1.0f) {
+        material->transmission = mask;
+    } else {
+        material->transmission =
+            _Combine(TfToken(glass.GetString() + "_transmission"), true, mask,
+                     {TfToken(), VtValue(gain)}, {TfToken(), VtValue(GfVec3f(1.0f))},
+                     {TfToken(), VtValue(1.0f)});
     }
     return true;
 }
@@ -914,10 +977,11 @@ _Translator::Translate()
     const TfToken surface =
         _ri.GetTerminalConnection(HdMaterialTerminalTokens->surface)
             .second.upstreamNodeName;
-    TfToken layer;
+    TfToken layer, glass;
+    _Source mask;
     _Material material;
     bool hasWorkflow;
-    if (!_GetSurface(surface, &layer) ||
+    if (!_GetSurface(surface, &layer, &glass, &mask) ||
         !_GetSource(surface, "presence", 1.0f, &material.presence) ||
         !_GetBase(layer, &material.albedo, &material.metallic, &material.specular,
                   &hasWorkflow)) {
@@ -930,7 +994,8 @@ _Translator::Translate()
         !_GetSource(layer, "specularRoughness", 0.2f, &material.roughness) ||
         !_GetGlass(layer, &enableRR, &material.transmission) ||
         !_GetValue(layer, "rrRoughness", 0.1f, &material.rrRoughness) ||
-        !_GetValue(layer, "rrIor", 1.5f, &material.rrIor)) {
+        !_GetValue(layer, "rrIor", 1.5f, &material.rrIor) ||
+        (!glass.IsEmpty() && !_GetMaskedGlass(glass, mask, enableRR, &material))) {
         return nullptr;
     }
     if (!_GetSubsurface(layer, material.albedo, &material.diffuse,
