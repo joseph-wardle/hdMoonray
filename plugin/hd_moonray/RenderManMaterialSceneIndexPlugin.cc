@@ -69,6 +69,7 @@ TF_DEFINE_PRIVATE_TOKENS(
 
     (pxrMaterialOut)
     (rendering)
+    (srgb_texture)
     (data)
     (resultRGB)
     (resultR)
@@ -465,22 +466,27 @@ _Translator::_GetImage(const TfToken& node, const char* input,
 }
 
 // The filename of a PxrTexture or PxrNormalMap whose filename_colorspace is
-// colorspace, or "rendering", "data" or unset when colorspace is empty.
-// RenderMan reads .tex texels as stored for all three; the pipeline bakes
-// colour maps to the rendering space when it makes the .tex files.
+// colorspace, or "rendering", "data" or unset when colorspace is empty. A .tex
+// file may also be "srgb_texture" when colorspace is empty, or unset when it
+// is not. RenderMan reads .tex texels as stored whatever the colorspace; the
+// pipeline bakes colour maps to the rendering space when it makes the .tex
+// files.
 bool
 _Translator::_GetFilename(const TfToken& node, const TfToken& colorspace,
                           std::string* filename)
 {
+    *filename = _AsString(_ri.GetNodeParameterValue(node, TfToken("filename")));
     const TfToken space(
         _AsString(_ri.GetNodeParameterValue(node, TfToken("filename_colorspace"))));
-    if (colorspace.IsEmpty() ? (!space.IsEmpty() && space != _tokens->rendering &&
-                                space != _tokens->data)
-                             : space != colorspace) {
+    const bool tex = TfStringEndsWith(*filename, ".tex");
+    const bool supported = colorspace.IsEmpty() ?
+        space.IsEmpty() || space == _tokens->rendering || space == _tokens->data ||
+            (space == _tokens->srgb_texture && tex) :
+        space == colorspace || (space.IsEmpty() && tex);
+    if (!supported) {
         return _Fail(node, "filename_colorspace '" + space.GetString() +
                            "' is not supported");
     }
-    *filename = _AsString(_ri.GetNodeParameterValue(node, TfToken("filename")));
     if (filename->empty()) {
         return _Fail(node, "filename is empty");
     }
