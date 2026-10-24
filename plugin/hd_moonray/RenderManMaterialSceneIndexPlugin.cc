@@ -221,6 +221,9 @@ private:
     template <typename T>
     bool _GetSource(const TfToken& node, const TfToken& input,
                     const T& fallback, _Source* source);
+    bool _GetAdjustedImage(const TfToken& node, const TfToken& input,
+                           const TfToken& type, const TfToken& output,
+                           _Source* source);
     bool _GetAdjustment(const TfToken& node, float* scale, float* offset,
                         bool* clamp);
     bool _GetImage(const TfToken& node, const TfToken& input,
@@ -364,24 +367,38 @@ _Translator::_GetSource(const TfToken& node, const TfToken& input,
         return true;
     }
 
-    TfToken name = connection.upstreamNodeName;
+    const TfToken& name = connection.upstreamNodeName;
     const TfToken type = _ri.GetNodeType(name);
-    _Image image;
-    bool clamp = false;
-    if (type != _tokens->PxrRemap && type != _tokens->PxrColorCorrect) {
-        if (!_GetImage(node, input, output, &image)) {
-            return false;
-        }
-    } else {
-        float scale, offset;
-        if (!_GetUpstream(node, input, type, output, &name) ||
-            !_GetAdjustment(name, &scale, &offset, &clamp) ||
-            !_GetImage(name, _tokens->inputRGB, _tokens->resultRGB, &image)) {
-            return false;
-        }
-        image.gain *= scale;
-        image.offset = image.offset * scale + GfVec3f(offset);
+    if (type == _tokens->PxrRemap || type == _tokens->PxrColorCorrect) {
+        return _GetAdjustedImage(node, input, type, output, source);
     }
+    _Image image;
+    if (!_GetImage(node, input, output, &image)) {
+        return false;
+    }
+    _images[name] = image;
+    *source = {name, VtValue()};
+    return true;
+}
+
+// A texture through a PxrRemap or PxrColorCorrect, as an ImageMap followed by
+// a ColorCorrectHsvMap or ClampMap when needed.
+bool
+_Translator::_GetAdjustedImage(const TfToken& node, const TfToken& input,
+                               const TfToken& type, const TfToken& output,
+                               _Source* source)
+{
+    TfToken name;
+    _Image image;
+    float scale, offset;
+    bool clamp;
+    if (!_GetUpstream(node, input, type, output, &name) ||
+        !_GetAdjustment(name, &scale, &offset, &clamp) ||
+        !_GetImage(name, _tokens->inputRGB, _tokens->resultRGB, &image)) {
+        return false;
+    }
+    image.gain *= scale;
+    image.offset = image.offset * scale + GfVec3f(offset);
     _images[name] = image;
     *source = {name, VtValue()};
 
