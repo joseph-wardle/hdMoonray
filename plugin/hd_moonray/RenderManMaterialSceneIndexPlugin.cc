@@ -109,6 +109,7 @@ struct _Source
 struct _Image
 {
     std::string filename;
+    int linearize = 0;
     GfVec3f gain = GfVec3f(1.0f);
     GfVec3f offset = GfVec3f(0.0f);
     GfVec3f missing = GfVec3f(1.0f, 0.0f, 1.0f);
@@ -455,10 +456,11 @@ _Translator::_GetImage(const TfToken& node, const char* input,
 {
     TfToken texture;
     return _GetUpstream(node, input, _tokens->PxrTexture, output, &texture) &&
-           _CheckInputs(texture, {"filename", "filename_colorspace",
+           _CheckInputs(texture, {"filename", "filename_colorspace", "linearize",
                                   "colorScale", "colorOffset", "missingColor",
                                   "alphaScale", "alphaOffset"}) &&
            _GetFilename(texture, TfToken(), &image->filename) &&
+           _GetValue(texture, "linearize", 0, &image->linearize) &&
            _GetValue(texture, "colorScale", GfVec3f(1.0f), &image->gain) &&
            _GetValue(texture, "colorOffset", GfVec3f(0.0f), &image->offset) &&
            _GetValue(texture, "missingColor", GfVec3f(1.0f, 0.0f, 1.0f),
@@ -846,6 +848,13 @@ _Translator::_Write(const TfToken& surface, const _Material& material)
         _Set(name, "wrap_around", VtValue(false));
         _Set(name, "use_default_color_when_missing", VtValue(true));
         _Set(name, "default_color", VtValue(image.missing));
+        // PxrTexture's linearize decodes sRGB before colorScale and
+        // colorOffset; ImageMap's gamma comes before its gain and offset and
+        // is a 2.2 power, within 0.009 of the sRGB curve.
+        if (image.linearize) {
+            _Set(name, "gamma_enabled", VtValue(true));
+            _Set(name, "gamma_adjust", VtValue(GfVec3f(1.0f / 2.2f)));
+        }
         if (image.gain != GfVec3f(1.0f) || image.offset != GfVec3f(0.0f)) {
             _Set(name, "gain_offset_enabled", VtValue(true));
             _Set(name, "gain", VtValue(image.gain));
