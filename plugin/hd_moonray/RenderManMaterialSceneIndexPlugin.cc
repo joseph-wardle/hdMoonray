@@ -7,14 +7,11 @@
 // (outputs:ri:surface) that Moonray cannot render, so hdMoonray falls back to
 // the material's universal network, usually a UsdPreviewSurface. When a
 // material has an ri surface and no moonray network, this scene index adds a
-// moonray network built from DwaBaseMaterial, ImageMap, OpMap,
-// TransformNormalMap and RgbToNormalMap.
+// moonray network built around a DwaBaseMaterial.
 //
-// Only one shape of network is recognised: PxrLayerSurface <- PxrLayerMixer
-// <- PxrLayer, with optional PxrMetallicWorkflow, PxrTexture, PxrRemap,
-// PxrColorCorrect, PxrNormalMap and PxrInvert nodes, and only the inputs
-// listed in _Translator. Any other network, node or input is left
-// untranslated with one warning, and the material renders as it did before.
+// Only the nodes and inputs _Translator checks for are translated. Any other
+// network is left untranslated with one warning, and the material renders as
+// it did before.
 // Set HDMOONRAY_RENDERMAN_MATERIALS=0 to turn the translation off.
 //
 // RenderMan defaults below are from RenderMan 27.3's shipped .oso and .args
@@ -410,13 +407,10 @@ _Translator::_GetAdjustedImage(const TfToken& node, const char* input,
     return true;
 }
 
-// A PxrRemap or PxrColorCorrect as scale * x + offset. Only inputs that keep
-// it linear are supported. RenderMan also clamps: PxrRemap its input and
-// output to [0, 1], PxrColorCorrect the HSV value to 1 before exposure.
-// Dropping those clamps changes nothing for inputs in [0, 1] except results
-// outside [0, 1], which DwaBaseMaterial clamps on every input set here.
-// An input range maps inputs in [0, 1] outside it, so clamp is set when there
-// is one, and is only supported with the default output range.
+// A PxrRemap or PxrColorCorrect as scale * x + offset, with clamp set when
+// PxrRemap has an input range. Only inputs that keep it linear are supported.
+// For inputs in [0, 1], dropping RenderMan's other clamps only changes results
+// outside [0, 1], which DwaBaseMaterial clamps.
 bool
 _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
                             bool* clamp)
@@ -493,12 +487,10 @@ _Translator::_GetFilename(const TfToken& node, const TfToken& colorspace,
     return true;
 }
 
-// PxrLayerSurface <- PxrLayerMixer <- PxrLayer, or a bare PxrSurface.
-// With only diffuseColor set, a PxrSurface renders as a PxrLayer with only
-// diffuseColor set, so it is read as one. diffuseDoubleSided needs no
-// translation: MoonRay lights both sides of double-sided geometry, as
-// RenderMan does when it is on. When it is off, RenderMan leaves back
-// faces unlit and MoonRay does not.
+// PxrLayerSurface <- PxrLayerMixer <- PxrLayer, or a PxrSurface with only
+// diffuseColor set, read as a PxrLayer since it renders as one.
+// diffuseDoubleSided is ignored: MoonRay lights both sides of double-sided
+// geometry, as RenderMan does when it is on.
 bool
 _Translator::_GetSurface(const TfToken& surface, TfToken* layer)
 {
@@ -672,17 +664,11 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
     return true;
 }
 
-// Subsurface. RenderMan adds a subsurface lobe to the diffuse one and scales
-// both its colour and its post tint by subsurfaceGain. DwaBaseMaterial has
-// one diffuse lobe, which scatters when scattering_radius is above 0, so the
-// whole lobe scatters, with albedo diffuse + gain * colour * gain * tint
-// (clamped to 1 by DwaBaseMaterial). subsurfaceTransmitGain only applies with
-// PxrLayerSurface subsurfaceDoubleSided, which is never set here.
-//
-// RenderMan's mean free path is subsurfaceDmfp * subsurfaceDmfpColor *
-// unitLength (0.1). In test renders of a shadow edge, half of it as
-// scattering_radius blurred the edge as RenderMan's default path traced
-// model does.
+// Subsurface. DwaBaseMaterial has one diffuse lobe, so the whole lobe
+// scatters, with albedo diffuse + gain * colour * gain * tint (clamped to 1).
+// subsurfaceTransmitGain needs subsurfaceDoubleSided, which is never set here.
+// scattering_radius is half RenderMan's mean free path (subsurfaceDmfp *
+// subsurfaceDmfpColor * 0.1), which matched its shadow edge blur in tests.
 bool
 _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
                             _Source* albedo, float* radius, GfVec3f* color)
