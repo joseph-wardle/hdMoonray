@@ -105,7 +105,8 @@ struct _Source
 };
 
 // An ImageMap: a PxrTexture, with its colorScale and colorOffset and any
-// PxrRemap or PxrColorCorrect after it folded into ImageMap's gain and offset.
+// PxrRemap, PxrColorCorrect or PxrInvert after it folded into ImageMap's gain
+// and offset.
 struct _Image
 {
     std::string filename;
@@ -334,9 +335,9 @@ _Translator::_GetValue(const TfToken& node, const char* input,
     return true;
 }
 
-// A float or colour input: a texture, possibly through a PxrRemap or
-// PxrColorCorrect, or a constant. The ImageMap is named after the node that
-// feeds the input.
+// A float or colour input: a texture, possibly through a PxrRemap,
+// PxrColorCorrect or PxrInvert, or a constant. The ImageMap is named after the
+// node that feeds the input.
 template <typename T>
 bool
 _Translator::_GetSource(const TfToken& node, const char* input,
@@ -357,7 +358,8 @@ _Translator::_GetSource(const TfToken& node, const char* input,
 
     const TfToken& name = connection.upstreamNodeName;
     const TfToken type = _ri.GetNodeType(name);
-    if (type == _tokens->PxrRemap || type == _tokens->PxrColorCorrect) {
+    if (type == _tokens->PxrRemap || type == _tokens->PxrColorCorrect ||
+        type == _tokens->PxrInvert) {
         return _GetAdjustedImage(node, input, type, output, source);
     }
     _Image image;
@@ -369,8 +371,8 @@ _Translator::_GetSource(const TfToken& node, const char* input,
     return true;
 }
 
-// A texture through a PxrRemap or PxrColorCorrect, as an ImageMap followed by
-// a ColorCorrectHsvMap or ClampMap when needed.
+// A texture through a PxrRemap, PxrColorCorrect or PxrInvert, as an ImageMap
+// followed by a ColorCorrectHsvMap or ClampMap when needed.
 bool
 _Translator::_GetAdjustedImage(const TfToken& node, const char* input,
                                const TfToken& type, const TfToken& output,
@@ -414,8 +416,9 @@ _Translator::_GetAdjustedImage(const TfToken& node, const char* input,
     return true;
 }
 
-// A PxrRemap or PxrColorCorrect as scale * x + offset, with clamp set when
-// PxrRemap has an input range. Only inputs that keep it linear are supported.
+// A PxrRemap, PxrColorCorrect or PxrInvert as scale * x + offset, with clamp
+// set when PxrRemap has an input range, and for PxrInvert, which clamps its
+// result to [0, 1]. Only inputs that keep it linear are supported.
 // For inputs in [0, 1], dropping RenderMan's other clamps only changes results
 // outside [0, 1], which DwaBaseMaterial clamps.
 bool
@@ -423,6 +426,13 @@ _Translator::_GetAdjustment(const TfToken& node, float* scale, float* offset,
                             bool* clamp)
 {
     *clamp = false;
+    if (_ri.GetNodeType(node) == _tokens->PxrInvert) {
+        // The default RGB colour model, inverting every channel.
+        *scale = -1.0f;
+        *offset = 1.0f;
+        *clamp = true;
+        return _CheckInputs(node, {"inputRGB"});
+    }
     if (_ri.GetNodeType(node) == _tokens->PxrRemap) {
         float inMin, inMax, min, max;
         if (!_CheckInputs(node, {"inputRGB", "inputMin", "inputMax",
