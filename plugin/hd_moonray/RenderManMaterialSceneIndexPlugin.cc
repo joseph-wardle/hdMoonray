@@ -218,6 +218,7 @@ private:
     bool _GetMaskedGlass(const TfToken& glass, const _Source& mask, int enableRR,
                          _Material* material);
     bool _GetSubsurface(const TfToken& layer, const _Source& diffuse,
+                        const _Source& diffuseGain,
                         _Source* albedo, float* radius, GfVec3f* color);
     bool _GetNormalMap(const TfToken& layer, TfToken* normalMap);
     _Source _Combine(const TfToken& name, bool multiply,
@@ -656,10 +657,9 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
         return false;
     }
     if (!*enableRR) {
-        // RenderMan ignores the rr inputs, but not diffuseGain.
+        // RenderMan ignores the rr inputs.
         *transmission = {TfToken(), VtValue(0.0f)};
-        return !_IsAuthored(layer, "diffuseGain") ||
-               _Fail(layer, "diffuseGain is only supported with enableRR");
+        return true;
     }
 
     _Source reflection;
@@ -736,7 +736,8 @@ _Translator::_GetMaskedGlass(const TfToken& glass, const _Source& mask,
 }
 
 // Subsurface. DwaBaseMaterial has one diffuse lobe, so the whole lobe
-// scatters, with albedo diffuse + gain * colour * gain * tint (clamped to 1).
+// scatters, with albedo diffuse * diffuseGain + gain * colour * gain * tint
+// (clamped to 1).
 // subsurfaceColor may share diffuseColor's connection, such as a
 // PxrMetallicWorkflow's resultDiffuseRGB, and then reads the same as diffuse.
 // subsurfaceTransmitGain needs subsurfaceDoubleSided, which is never set here.
@@ -744,13 +745,17 @@ _Translator::_GetMaskedGlass(const TfToken& glass, const _Source& mask,
 // subsurfaceDmfpColor * 0.1), which matched its shadow edge blur in tests.
 bool
 _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
+                            const _Source& diffuseGain,
                             _Source* albedo, float* radius, GfVec3f* color)
 {
     int enable = 0;
     if (!_GetValue(layer, "enableSubsurface", 0, &enable)) {
         return false;
     }
-    *albedo = diffuse;
+    const _Source one = {TfToken(), VtValue(1.0f)};
+    *albedo = diffuseGain == one ? diffuse :
+        _Combine(TfToken(layer.GetString() + "_diffuse"), true,
+                 diffuse, diffuseGain, {TfToken(), VtValue(GfVec3f(1.0f))}, one);
     *radius = 0.0f;
     *color = GfVec3f(1.0f);
     if (!enable) {
@@ -775,12 +780,11 @@ _Translator::_GetSubsurface(const TfToken& layer, const _Source& diffuse,
                    GfVec3f(0.851f, 0.557f, 0.395f), &dmfpColor)) {
         return false;
     }
-    const _Source one = {TfToken(), VtValue(1.0f)};
     const _Source subsurface =
         _Combine(TfToken(layer.GetString() + "_subsurface"), true,
                  subsurfaceColor, gain, tint, gain);
     *albedo = _Combine(TfToken(layer.GetString() + "_albedo"), false,
-                       diffuse, one, subsurface, one);
+                       diffuse, diffuseGain, subsurface, one);
 
     // scattering_color is clamped to 1, so carry its scale in the radius.
     const float longest = std::max({dmfpColor[0], dmfpColor[1], dmfpColor[2]});
@@ -998,7 +1002,12 @@ _Translator::Translate()
         (!glass.IsEmpty() && !_GetMaskedGlass(glass, mask, enableRR, &material))) {
         return nullptr;
     }
-    if (!_GetSubsurface(layer, material.albedo, &material.diffuse,
+    // With enableRR, diffuseGain is the inverse of transmission (see
+    // _GetGlass); with enableDiffuse off, it does nothing.
+    _Source diffuseGain = {TfToken(), VtValue(1.0f)};
+    if ((!enableRR && material.enableDiffuse &&
+         !_GetSource(layer, "diffuseGain", 1.0f, &diffuseGain)) ||
+        !_GetSubsurface(layer, material.albedo, diffuseGain, &material.diffuse,
                         &material.radius, &material.radiusColor)) {
         return nullptr;
     }
