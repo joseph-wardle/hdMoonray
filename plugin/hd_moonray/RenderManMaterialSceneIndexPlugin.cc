@@ -146,6 +146,8 @@ struct _Material
     _Source specular;
     _Source roughness;
     _Source transmission;
+    _Source transmissionColor;
+    int thin = 0;
     float rrRoughness = 0.1f;
     float rrIor = 1.5f;
     _Source presence;
@@ -215,7 +217,8 @@ private:
                    _Source* mask);
     bool _GetBase(const TfToken& layer, _Source* albedo, _Source* metallic,
                   _Source* specular, bool* hasWorkflow);
-    bool _GetGlass(const TfToken& layer, int* enableRR, _Source* transmission);
+    bool _GetGlass(const TfToken& layer, int* enableRR, _Source* transmission,
+                   _Source* color);
     bool _GetMaskedGlass(const TfToken& glass, const _Source& mask, int enableRR,
                          _Material* material);
     bool _GetSubsurface(const TfToken& layer, const _Source& diffuse,
@@ -528,7 +531,8 @@ _Translator::_GetSurface(const TfToken& surface, TfToken* layer, TfToken* glass,
     } else {
         if (!_CheckType(surface, _tokens->PxrLayerSurface) ||
             !_CheckInputs(surface,
-                          {"inputMaterial", "presence", "diffuseDoubleSided"}) ||
+                          {"inputMaterial", "presence", "diffuseDoubleSided",
+                           "thinGlass"}) ||
             !_GetUpstream(surface, "inputMaterial", _tokens->PxrLayerMixer,
                           _tokens->pxrMaterialOut, &mixer) ||
             !_GetLayer(mixer, layer, glass, mask) ||
@@ -536,7 +540,8 @@ _Translator::_GetSurface(const TfToken& surface, TfToken* layer, TfToken* glass,
                                    "diffuseColor", "specularFaceColor",
                                    "specularEdgeColor", "specularRoughness",
                                    "bumpNormal", "enableRR", "rrRefractionGain",
-                                   "rrReflectionGain", "rrRoughness", "rrIor",
+                                   "rrRefractionColor", "rrReflectionGain",
+                                   "rrRoughness", "rrIor",
                                    "diffuseGain", "enableSubsurface", "subsurfaceGain",
                                    "subsurfaceColor", "subsurfaceDmfp",
                                    "subsurfaceDmfpColor", "subsurfacePostTint",
@@ -660,8 +665,10 @@ _Translator::_GetBase(const TfToken& layer, _Source* albedo, _Source* metallic,
 // Glass (enableRR). The pipeline drives refraction and reflection from one
 // transparency map and diffuseGain from its inverse. DwaBaseMaterial layers
 // transmission over diffuse, so that inverse is implied and dropped.
+// rrRefractionColor becomes transmission_color.
 bool
-_Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmission)
+_Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmission,
+                       _Source* color)
 {
     if (!_GetValue(layer, "enableRR", 0, enableRR)) {
         return false;
@@ -669,11 +676,13 @@ _Translator::_GetGlass(const TfToken& layer, int* enableRR, _Source* transmissio
     if (!*enableRR) {
         // RenderMan ignores the rr inputs.
         *transmission = {TfToken(), VtValue(0.0f)};
+        *color = {TfToken(), VtValue(GfVec3f(1.0f))};
         return true;
     }
 
     _Source reflection;
     if (!_GetSource(layer, "rrRefractionGain", 0.0f, transmission) ||
+        !_GetSource(layer, "rrRefractionColor", GfVec3f(1.0f), color) ||
         !_GetSource(layer, "rrReflectionGain", 0.0f, &reflection)) {
         return false;
     }
@@ -903,15 +912,14 @@ _Translator::_Write(const TfToken& surface, const _Material& material)
     _Set(surface, "refractive_index", VtValue(1.5f));
     _Set(surface, "specular_model", VtValue(TfToken("Beckmann")));
     _Set(surface, "roughness", material.roughness);
-    // PxrLayer rrRefractionColor 1, thinGlass 0.
     _Set(surface, "show_transmission", VtValue(true));
     _Set(surface, "transmission", material.transmission);
-    _Set(surface, "transmission_color", VtValue(GfVec3f(1.0f)));
+    _Set(surface, "transmission_color", material.transmissionColor);
     _Set(surface, "use_independent_transmission_roughness", VtValue(true));
     _Set(surface, "independent_transmission_roughness", VtValue(material.rrRoughness));
     _Set(surface, "use_independent_transmission_refractive_index", VtValue(true));
     _Set(surface, "independent_transmission_refractive_index", VtValue(material.rrIor));
-    _Set(surface, "thin_geometry", VtValue(false));
+    _Set(surface, "thin_geometry", VtValue(material.thin != 0));
     _Set(surface, "presence", material.presence);
     _out->SetTerminalConnection(HdMaterialTerminalTokens->surface,
                                 {surface, HdMaterialTerminalTokens->surface});
@@ -1006,11 +1014,20 @@ _Translator::Translate()
     if (!_GetValue(layer, "enableDiffuse", 1, &material.enableDiffuse) ||
         !_GetValue(layer, "enableSpecular", 0, &material.enableSpecular) ||
         !_GetSource(layer, "specularRoughness", 0.2f, &material.roughness) ||
-        !_GetGlass(layer, &enableRR, &material.transmission) ||
+        !_GetGlass(layer, &enableRR, &material.transmission,
+                   &material.transmissionColor) ||
         !_GetValue(layer, "rrRoughness", 0.1f, &material.rrRoughness) ||
         !_GetValue(layer, "rrIor", 1.5f, &material.rrIor) ||
-        (!glass.IsEmpty() && !_GetMaskedGlass(glass, mask, enableRR, &material))) {
+        (!glass.IsEmpty() && !_GetMaskedGlass(glass, mask, enableRR, &material)) ||
+        !_GetValue(surface, "thinGlass", 0, &material.thin)) {
         return nullptr;
+    }
+    // thinGlass stops RenderMan's glass bending rays; thin_geometry does the
+    // same for DwaBaseMaterial's transmission, which then ignores rrRoughness.
+    // It also treats every hit as entering for the other lobes' Fresnel, so it
+    // is only set for glass.
+    if (!enableRR && glass.IsEmpty()) {
+        material.thin = 0;
     }
     // With enableRR, diffuseGain is the inverse of transmission (see
     // _GetGlass); with enableDiffuse off, it does nothing.
